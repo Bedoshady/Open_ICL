@@ -42,6 +42,11 @@ class DONet(nn.Module):
             nn.Linear(128, feature_dim)
         )
         
+        # Semantic Feature Centers (SFCs) integrated into the model
+        self.sfcs = nn.Parameter(torch.randn(num_known_classes, feature_dim))
+        self.num_classes = num_known_classes
+        self.feature_dim = feature_dim
+        
     def forward(self, x):
         # x shape: [Batch, 2, 128]
         features = self.shared_conv(x)
@@ -50,14 +55,18 @@ class DONet(nn.Module):
         logits = self.clp(features)
         contrast_features = self.cop(features)
         
-        # Normalize contrast features for distance computing
+        # Normalize contrast features and SFCs for distance computing
         contrast_features = F.normalize(contrast_features, p=2, dim=1)
+        sfc_normalized = F.normalize(self.sfcs, p=2, dim=1)
         
-        return logits, contrast_features
+        # DM: Calculate Euclidean distances between signals and all known class centers
+        distances = torch.cdist(contrast_features, sfc_normalized, p=2)
+        
+        return logits, contrast_features, distances
 
     def update_num_classes(self, new_num_classes):
         """
-        Dynamically expand the classification path for incremental learning
+        Dynamically expand the classification path and SFCs for incremental learning
         without forgetting old classes.
         """
         old_clp_weight = self.clp[-1].weight.data
@@ -73,6 +82,11 @@ class DONet(nn.Module):
         # Keep old weights to retain memory of previous classes
         new_layer.weight.data[:old_num_classes] = old_clp_weight
         new_layer.bias.data[:old_num_classes] = old_clp_bias
-        
-        # Replace the layer
         self.clp[-1] = new_layer
+        
+        # Update SFCs
+        new_sfcs = torch.randn(new_num_classes, self.feature_dim).to(self.sfcs.device)
+        new_sfcs[:old_num_classes] = self.sfcs.data
+        self.sfcs = nn.Parameter(new_sfcs)
+        
+        self.num_classes = new_num_classes

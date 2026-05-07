@@ -39,14 +39,17 @@ def main():
     num_known = len(known_classes)
     model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
     
-    criterion = OpenICLLoss(num_classes=num_known, feature_dim=128).to(device)
-    optimizer = optim.Adam(list(model.parameters()) + list(criterion.parameters()), lr=1e-3)
+    criterion = OpenICLLoss().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     
     dat = DynamicAdaptiveThreshold(alpha=0.95)
     mia = MovingIntersectionAlgorithm(confidence_threshold=0.5)
     usb = UnknownSignalBank(max_size=5000)
     
     num_epochs = 10
+    
+    # Create directory for checkpoints
+    os.makedirs("checkpoints", exist_ok=True)
     
     for epoch in range(num_epochs):
         model.train()
@@ -56,10 +59,12 @@ def main():
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             
             optimizer.zero_grad()
-            logits, contrast_features = model(batch_x)
+            
+            # The model now natively computes the Distance Metric (DM) against SFCs
+            logits, contrast_features, distances = model(batch_x)
             
             # Calculate loss (only applied to known classes where label >= 0)
-            loss = criterion(logits, contrast_features, batch_y)
+            loss = criterion(logits, distances, batch_y)
             
             if loss.requires_grad:
                 loss.backward()
@@ -68,16 +73,13 @@ def main():
                 
             # Open-Set Recognition and USB population
             with torch.no_grad():
-                centers = F.normalize(criterion.contrastive_loss.centers, p=2, dim=1)
-                dists = torch.cdist(contrast_features, centers, p=2)
-                
                 # Update DAT threshold with known samples
-                dat.update(dists, batch_y)
+                dat.update(distances, batch_y)
                 
                 # Use MIA to find reliable unknowns in this batch
                 current_threshold = dat.get_threshold()
                 if current_threshold > 0:
-                    reliable_unknown_mask = mia.filter_unknowns(dists, current_threshold)
+                    reliable_unknown_mask = mia.filter_unknowns(distances, current_threshold)
                     
                     # Store these reliable unknown signals in USB
                     if reliable_unknown_mask.any():
@@ -87,6 +89,16 @@ def main():
                 
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}, DAT Threshold: {dat.get_threshold():.4f}")
         print(f"Signals currently in Unknown Signal Bank: {len(usb.signals)}")
+
+    # Save initial model state
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'known_classes': known_classes,
+        'dat_threshold': dat.get_threshold()
+    }, "checkpoints/phase1_model.pth")
+    
+    print("\nPhase 1 Training Complete! Model saved.")
+    print("Now ready for Incremental Learning (Phase 2).")
 
 if __name__ == '__main__':
     main()
