@@ -15,7 +15,7 @@ def evaluate_model():
         print("Model checkpoint not found. Run train.py first.")
         return
         
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     known_classes = checkpoint['known_classes']
     dat_threshold = checkpoint['dat_threshold']
     num_known = len(known_classes)
@@ -45,7 +45,7 @@ def evaluate_model():
     total_known = 0
     
     with torch.no_grad():
-        for batch_x, batch_y in val_loader:
+        for batch_x, batch_y, _ in val_loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             
             logits, _, distances = model(batch_x)

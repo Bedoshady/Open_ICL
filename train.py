@@ -22,9 +22,11 @@ def main():
     # RadioML 2016.10a modulations
     all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
     
-    # Split into known and unknown to simulate open-set scenarios
-    known_classes = all_classes[:8]
-    unknown_classes = all_classes[8:]
+    # Split into known and unknown to minimize confusion (test theory)
+    # Known: All Phase/Amplitude shift keying
+    known_classes = ['8PSK', 'BPSK', 'QPSK', 'QAM16', 'QAM64', 'PAM4']
+    # Unknown: All AM/FM/FSK continuous modulations
+    unknown_classes = ['AM-DSB', 'AM-SSB', 'CPFSK', 'GFSK', 'WBFM']
     
     print(f"Known classes: {known_classes}")
     print(f"Unknown classes: {unknown_classes}")
@@ -33,7 +35,7 @@ def main():
         dataset_path, 
         known_classes=known_classes, 
         unknown_classes=unknown_classes,
-        batch_size=128
+        batch_size=512
     )
     
     num_known = len(known_classes)
@@ -43,10 +45,10 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     
     dat = DynamicAdaptiveThreshold(alpha=0.95)
-    mia = MovingIntersectionAlgorithm(confidence_threshold=0.5)
-    usb = UnknownSignalBank(max_size=5000)
+    mia = MovingIntersectionAlgorithm(L=5)
+    usb = UnknownSignalBank(max_size=40000)
     
-    num_epochs = 10
+    num_epochs = 50
     
     # Create directory for checkpoints
     os.makedirs("checkpoints", exist_ok=True)
@@ -54,9 +56,11 @@ def main():
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
+        epoch_candidates = set()
+        epoch_candidate_data = {}
         
-        for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+        for batch_x, batch_y, batch_idx in train_loader:
+            batch_x, batch_y, batch_idx = batch_x.to(device), batch_y.to(device), batch_idx.to(device)
             
             optimizer.zero_grad()
             
@@ -76,16 +80,29 @@ def main():
                 # Update DAT threshold with known samples
                 dat.update(distances, batch_y)
                 
-                # Use MIA to find reliable unknowns in this batch
+                # Use MIA to find candidate unknowns in this batch
                 current_threshold = dat.get_threshold()
                 if current_threshold > 0:
-                    reliable_unknown_mask = mia.filter_unknowns(distances, current_threshold)
+                    candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                    epoch_candidates.update(candidates)
                     
-                    # Store these reliable unknown signals in USB
-                    if reliable_unknown_mask.any():
-                        unknown_signals = batch_x[reliable_unknown_mask]
-                        unknown_features = contrast_features[reliable_unknown_mask]
-                        usb.add_signals(unknown_signals, unknown_features)
+                    # Temporarily store the signals/features of candidates for this epoch
+                    for idx_val in candidates:
+                        # Find the local batch position for this global index
+                        local_pos = (batch_idx == idx_val).nonzero(as_tuple=True)[0][0]
+                        epoch_candidate_data[idx_val] = (batch_x[local_pos].cpu(), contrast_features[local_pos].cpu())
+                        
+        # End of epoch: evaluate MIA intersection
+        reliable_indices = mia.update_epoch(epoch_candidates)
+        if reliable_indices:
+            new_signals = []
+            new_features = []
+            for idx_val in reliable_indices:
+                if idx_val in epoch_candidate_data:
+                    new_signals.append(epoch_candidate_data[idx_val][0])
+                    new_features.append(epoch_candidate_data[idx_val][1])
+            if new_signals:
+                usb.add_signals(new_signals, new_features)
                 
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}, DAT Threshold: {dat.get_threshold():.4f}")
         print(f"Signals currently in Unknown Signal Bank: {len(usb.signals)}")
@@ -94,7 +111,9 @@ def main():
     torch.save({
         'model_state_dict': model.state_dict(),
         'known_classes': known_classes,
-        'dat_threshold': dat.get_threshold()
+        'dat_threshold': dat.get_threshold(),
+        'usb_signals': usb.signals,
+        'usb_features': usb.features
     }, "checkpoints/phase1_model.pth")
     
     print("\nPhase 1 Training Complete! Model saved.")

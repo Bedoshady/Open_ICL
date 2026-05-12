@@ -39,10 +39,12 @@ class OpenICLLoss(nn.Module):
         self.alpha = alpha
         
     def forward(self, logits, distances, labels):
-        # Cross Entropy for Classification Path
+        # Cross Entropy for Classification Path (L_cl)
         loss_ce = self.ce_loss(logits, labels)
         
-        # Contrastive Loss for Contrast Path (using pre-calculated distances from the model)
+        # Contrastive Loss for Contrast Path (L_ct)
         loss_con = self.contrastive_loss(distances, labels)
         
-        return loss_ce + self.alpha * loss_con
+        # Following Equation (8) from the Open-ICL paper:
+        # L = \lambda * L_cl + (1 - \lambda) * L_ct
+        return self.alpha * loss_ce + (1 - self.alpha) * loss_con

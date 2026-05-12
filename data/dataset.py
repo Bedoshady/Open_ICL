@@ -51,7 +51,7 @@ class RadioMLDataset(Dataset):
         # RML2016.10a shapes are usually (2, 128) per sample
         x = torch.FloatTensor(self.data[idx])
         y = torch.tensor(self.labels[idx], dtype=torch.long)
-        return x, y
+        return x, y, idx
 
 def get_dataloaders(file_path, known_classes, unknown_classes=None, batch_size=128, min_snr=0):
     dataset = RadioMLDataset(file_path, known_classes, unknown_classes, min_snr)
