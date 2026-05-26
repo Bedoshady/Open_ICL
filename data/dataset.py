@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from core.sampler import PKSampler
+
 class RadioMLDataset(Dataset):
     """
     Dataset loader for RadioML 2016.10a / 2018.01a.
@@ -53,7 +55,19 @@ class RadioMLDataset(Dataset):
         y = torch.tensor(self.labels[idx], dtype=torch.long)
         return x, y, idx
 
-def get_dataloaders(file_path, known_classes, unknown_classes=None, batch_size=128, min_snr=0):
+def get_dataloaders(file_path, known_classes, unknown_classes=None,
+                    batch_size=128, min_snr=0, use_pk_sampler=True,
+                    P=6, K=8):
+    """
+    Build train / validation DataLoaders.
+
+    Args:
+        use_pk_sampler: If True the training loader uses a PKSampler
+            that guarantees each batch has P classes × K samples for
+            effective batch-hard triplet mining.
+        P: Number of classes per batch (must be <= number of known classes).
+        K: Number of samples per class per batch.
+    """
     dataset = RadioMLDataset(file_path, known_classes, unknown_classes, min_snr)
     
     train_size = int(0.8 * len(dataset))
@@ -61,9 +75,35 @@ def get_dataloaders(file_path, known_classes, unknown_classes=None, batch_size=1
     
     # Use manual seed for reproducible splits
     generator = torch.Generator().manual_seed(42)
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size], generator=generator)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size], generator=generator
+    )
+
+    if use_pk_sampler:
+        # Extract labels for the training subset indices
+        train_labels = [dataset.labels[i] for i in train_dataset.indices]
+        pk_sampler = PKSampler(train_labels, P=P, K=K)
+
+        # PKSampler yields full batch index-lists, so we use batch_sampler
+        # and remap the local PKSampler indices back to the dataset indices.
+        class _RemappedSampler:
+            """Thin wrapper that maps PKSampler local indices → Subset global indices."""
+            def __init__(self, pk, subset_indices):
+                self._pk = pk
+                self._map = subset_indices  # list[int]
+
+            def __iter__(self):
+                for batch in self._pk:
+                    yield [self._map[i] for i in batch]
+
+            def __len__(self):
+                return len(self._pk)
+
+        remapped = _RemappedSampler(pk_sampler, train_dataset.indices)
+        train_loader = DataLoader(dataset, batch_sampler=remapped)
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     
     return train_loader, val_loader

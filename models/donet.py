@@ -47,25 +47,32 @@ class DONet(nn.Module):
         
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         
-        # Classification Path (CLP)
-        self.clp = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_known_classes)
-        )
-        
-        # Contrast Path (COP)
+        # Contrast Path (COP) with BNNeck and LeakyReLU to prevent representation collapse
         self.cop = nn.Sequential(
             nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, feature_dim)
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(0.1),
+            nn.Linear(256, feature_dim),
+            nn.BatchNorm1d(feature_dim)
         )
         
-        # Semantic Feature Centers (SFCs) integrated into the model
-        self.sfcs = nn.Parameter(torch.randn(num_known_classes, feature_dim))
         self.num_classes = num_known_classes
         self.feature_dim = feature_dim
+        
+        # Apply Kaiming initialization
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
         
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
@@ -88,41 +95,16 @@ class DONet(nn.Module):
         out = self.avgpool(out)
         features = out.view(out.size(0), -1) # Flatten -> [Batch, 512]
         
-        logits = self.clp(features)
         contrast_features = self.cop(features)
         
-        # Normalize contrast features and SFCs for distance computing
+        # Normalize contrast features for distance computing
         contrast_features = F.normalize(contrast_features, p=2, dim=1)
-        sfc_normalized = F.normalize(self.sfcs, p=2, dim=1)
         
-        # DM: Calculate Euclidean distances between signals and all known class centers
-        distances = torch.cdist(contrast_features, sfc_normalized, p=2)
-        
-        return logits, contrast_features, distances
+        return contrast_features
 
     def update_num_classes(self, new_num_classes):
         """
-        Dynamically expand the classification path and SFCs for incremental learning
-        without forgetting old classes.
+        Dynamically update the number of classes for incremental learning.
+        No structural changes needed for the COP, just tracking the class count.
         """
-        old_clp_weight = self.clp[-1].weight.data
-        old_clp_bias = self.clp[-1].bias.data
-        old_num_classes = old_clp_weight.size(0)
-        
-        if new_num_classes <= old_num_classes:
-            return
-            
-        in_features = self.clp[-1].in_features
-        new_layer = nn.Linear(in_features, new_num_classes).to(old_clp_weight.device)
-        
-        # Keep old weights to retain memory of previous classes
-        new_layer.weight.data[:old_num_classes] = old_clp_weight
-        new_layer.bias.data[:old_num_classes] = old_clp_bias
-        self.clp[-1] = new_layer
-        
-        # Update SFCs
-        new_sfcs = torch.randn(new_num_classes, self.feature_dim).to(self.sfcs.device)
-        new_sfcs[:old_num_classes] = self.sfcs.data
-        self.sfcs = nn.Parameter(new_sfcs)
-        
         self.num_classes = new_num_classes
