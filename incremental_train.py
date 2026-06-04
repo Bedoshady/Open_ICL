@@ -1,13 +1,12 @@
+from core.loss import BatchAllTripletLoss
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 import os
 import numpy as np
 
 from models.donet import DONet
-from core.loss import BatchHardTripletLoss, CenterLoss, get_margin
-from core.evt import DynamicEVT
 from utils.usb import UnknownSignalBank
-from utils.logger import TrainingLogger, EarlyStopping
 from data.dataset import get_dataloaders
 
 def run_incremental_learning():
@@ -24,7 +23,8 @@ def run_incremental_learning():
     known_classes = checkpoint['known_classes']
     num_known = len(known_classes)
     
-    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
+    use_simple_proj = checkpoint.get('use_simple_projection', True)
+    model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # 2. Load USB from checkpoint
@@ -64,24 +64,16 @@ def run_incremental_learning():
     
     # 5. Fine-Tuning Phase with Sample Replay using Triplet Loss
     print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (Triplet Loss) ---")
-    criterion = BatchHardTripletLoss(margin=1.0).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
-
-    # Optional Center Loss for incremental phase
-    center_loss_fn = CenterLoss(num_classes=total_classes,
-                                 feat_dim=128,
-                                 device=device).to(device)
-    center_optimizer = optim.SGD(center_loss_fn.parameters(), lr=0.5)
-    LAMBDA_CENTER = 0.01
+    criterion = BatchAllTripletLoss().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0006, weight_decay=1e-4)
 
     # Scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6, verbose=True
-    )
+        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6)
 
     # Logger
-    inc_logger = TrainingLogger(log_path="logs/incremental_training_log.csv")
-    early_stop = EarlyStopping(patience=5, min_delta=1e-4)
+    #inc_logger = TrainingLogger(log_path="logs/incremental_training_log.csv")
+    #early_stop = EarlyStopping(patience=5, min_delta=1e-4)
     
     model.train()
     
@@ -103,16 +95,19 @@ def run_incremental_learning():
         usb_signals = torch.empty((0, 2, 128))
         usb_labels = torch.empty((0,), dtype=torch.long)
         
-    num_epochs = 10  # more epochs to benefit from scheduler
+    num_epochs = 5  # more epochs to benefit from scheduler
     usb_batch_size = 32
     
     for epoch in range(num_epochs):
-        inc_logger.epoch_start()
+        # Update SFCs dynamically 
+        model.update_sfcs(train_loader, device, extra_x=usb_signals, extra_y=usb_labels)
+        
+        #inc_logger.epoch_start()
         total_loss = 0
         batches = 0
 
         # Margin curriculum: ramp 0.5 → 1.0 over first 5 epochs
-        current_margin = get_margin(epoch, 0.5, 1.0, ramp_epochs=5)
+        #current_margin = get_margin(epoch, 0.5, 1.0, ramp_epochs=5)
         
         # Iterate over the original dataset (Sample Replay)
         for batch_known_x, batch_known_y, _ in train_loader:
@@ -130,75 +125,60 @@ def run_incremental_learning():
                 batch_y = batch_known_y.to(device)
             
             optimizer.zero_grad()
-            center_optimizer.zero_grad()
+            #center_optimizer.zero_grad()
             
-            # Forward pass: model now returns only contrast_features
-            contrast_features = model(batch_x)
+            # Forward pass: model returns (logits, contrast_features, distances)
+            logits, contrast_features, distances = model(batch_x)
             
-            # Triplet Loss handles both known and novel pseudo-labels
-            loss = criterion(contrast_features, batch_y, margin_override=current_margin)
-            c_loss = center_loss_fn(contrast_features, batch_y)
-            loss = loss + LAMBDA_CENTER * c_loss
+            # Filter known samples for loss calculation (in case -1 labels exist)
+            valid_mask = (batch_y != -1)
             
-            if loss.requires_grad:
-                loss.backward()
-                optimizer.step()
-                center_optimizer.step()
-                total_loss += loss.item()
-                batches += 1
+            if valid_mask.sum() > 0:
+                # Joint Loss: alpha * ce_loss + (1 - alpha) * triplet_loss
+                alpha = 0.5
+                ce_loss = F.cross_entropy(logits[valid_mask], batch_y[valid_mask])
+                triplet_loss = criterion(contrast_features[valid_mask], batch_y[valid_mask])
+                loss = alpha * ce_loss + (1.0 - alpha) * triplet_loss
+                
+                if loss.requires_grad:
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                    batches += 1
 
         avg_loss = total_loss / max(1, batches)
         current_lr = optimizer.param_groups[0]['lr']
         scheduler.step(avg_loss)
 
-        inc_logger.epoch_end(
-            epoch=epoch + 1, loss=avg_loss, lr=current_lr,
-            margin=current_margin, usb_size=len(usb.signals)
-        )
-        print(f"Fine-Tuning Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, "
-              f"LR: {current_lr:.6f}, Margin: {current_margin:.2f}")
-
-        if early_stop.step(avg_loss):
-            print(f"Incremental fine-tuning stopped early at epoch {epoch+1}.")
-            break
-
-    # 6. Re-fit EVT on updated features (known + newly discovered)
-    print("\n--- Step 5: Re-fitting EVT on Incremental Features ---")
-    evt = DynamicEVT(tail_size=0.05)
-    
-    all_features = []
-    all_labels = []
+    # 6. Re-calculate DAT threshold on updated features (known + newly discovered)
+    print("\n--- Step 5: Re-calculating DAT Threshold on Incremental Features ---")
+    from core.threshold import DynamicAdaptiveThreshold
+    dat = DynamicAdaptiveThreshold(alpha=0.95)
     model.eval()
     with torch.no_grad():
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
-            contrast_features = model(batch_x)
-            known_mask = batch_y >= 0
-            if known_mask.any():
-                all_features.append(contrast_features[known_mask.to(device)].cpu())
-                all_labels.append(batch_y[known_mask])
-                
-        # Also add USB signals (novel classes)
+            batch_y = batch_y.to(device)
+            _, _, distances = model(batch_x)
+            
+            valid_mask = (batch_y != -1)
+            if valid_mask.sum() > 0:
+                dat.update(distances[valid_mask], batch_y[valid_mask])
+            
         if len(usb_signals) > 0:
             usb_batch = usb_signals.to(device)
-            usb_features = model(usb_batch)
-            all_features.append(usb_features.cpu())
-            all_labels.append(usb_labels)
+            _, _, usb_distances = model(usb_batch)
+            dat.update(usb_distances, usb_labels.to(device))
 
-    all_features_tensor = torch.cat(all_features, dim=0)
-    all_labels_tensor = torch.cat(all_labels, dim=0)
-    evt.fit(all_features_tensor, all_labels_tensor)
-    print("EVT re-fitted on all known + novel classes.")
-    
     # Save the expanded model
     novel_class_names = [f"Novel_{i}" for i in range(n_new_classes)]
     torch.save({
         'model_state_dict': model.state_dict(),
         'known_classes': known_classes + novel_class_names,
-        'evt_models': evt.models,
-        'evt_centroids': evt.centroids,
+        'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
-        'usb_features': usb.features
+        'usb_features': usb.features,
+        'use_simple_projection': use_simple_proj
     }, "checkpoints/phase2_incremental_model.pth")
     
     print(f"\nIncremental Learning Complete!")

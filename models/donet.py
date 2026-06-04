@@ -30,9 +30,8 @@ class DONet(nn.Module):
     """
     Dual-Path 1-D Network (DONet) with ResNet-18 backbone
     """
-    def __init__(self, num_known_classes, feature_dim=128):
+    def __init__(self, num_known_classes, feature_dim=128, use_simple_projection=True):
         super(DONet, self).__init__()
-        
         self.in_planes = 64
 
         # ResNet-18 1D Backbone (Shared Feature Extractor)
@@ -47,15 +46,31 @@ class DONet(nn.Module):
         
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         
-        # Contrast Path (COP) with BNNeck and LeakyReLU to prevent representation collapse
-        self.cop = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.LeakyReLU(0.1),
-            nn.Linear(256, feature_dim),
-            nn.BatchNorm1d(feature_dim)
-        )
+        # Feature projection
+        self.use_simple_projection = use_simple_projection
+        if use_simple_projection:
+            self.cop = nn.Linear(512, feature_dim)
+            self.clp = nn.Sequential(
+                nn.Linear(512, num_known_classes)
+            )
+        else:
+            # Contrast Path (COP) with BNNeck and LeakyReLU to prevent representation collapse
+            self.cop = nn.Sequential(
+                nn.BatchNorm1d(512),
+                nn.ReLU(),
+                nn.Dropout(p=0.3),
+                nn.Linear(512, feature_dim),
+            )
+            # Classification Path (CLP)
+            self.clp = nn.Sequential(
+                nn.BatchNorm1d(512),
+                nn.ReLU(),
+                nn.Dropout(p=0.3),
+                nn.Linear(512, num_known_classes)
+            )
         
+        # Semantic Feature Centers (SFCs) integrated into the model
+        self.register_buffer('sfcs', torch.zeros(num_known_classes, feature_dim))
         self.num_classes = num_known_classes
         self.feature_dim = feature_dim
         
@@ -84,6 +99,7 @@ class DONet(nn.Module):
 
     def forward(self, x):
         # x shape: [Batch, 2, 128]
+        
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.maxpool(out)
         
@@ -94,17 +110,98 @@ class DONet(nn.Module):
         
         out = self.avgpool(out)
         features = out.view(out.size(0), -1) # Flatten -> [Batch, 512]
-        
         contrast_features = self.cop(features)
+        logits = self.clp(features)
         
-        # Normalize contrast features for distance computing
+        # Normalize contrast features and SFCs for distance computing
         contrast_features = F.normalize(contrast_features, p=2, dim=1)
+        sfc_normalized = F.normalize(self.sfcs, p=2, dim=1)
         
-        return contrast_features
+        # Calculate Euclidean distances between signals and all known class centers (SFCs)
+        distances = torch.cdist(contrast_features, sfc_normalized, p=2)
+        
+        return logits, contrast_features, distances
 
     def update_num_classes(self, new_num_classes):
         """
-        Dynamically update the number of classes for incremental learning.
-        No structural changes needed for the COP, just tracking the class count.
+        Dynamically update the number of classes for incremental learning by expanding the CLP layer and SFCs.
         """
+        old_clp_weight = self.clp[-1].weight.data
+        old_clp_bias = self.clp[-1].bias.data
+        old_num_classes = old_clp_weight.size(0)
+        
+        if new_num_classes <= old_num_classes:
+            return
+            
+        in_features = self.clp[-1].in_features
+        new_layer = nn.Linear(in_features, new_num_classes).to(old_clp_weight.device)
+        
+        # Copy weights
+        new_layer.weight.data[:old_num_classes] = old_clp_weight
+        new_layer.bias.data[:old_num_classes] = old_clp_bias
+        self.clp[-1] = new_layer
+        
+        # Update SFCs
+        new_sfcs = torch.zeros(new_num_classes, self.feature_dim).to(self.sfcs.device)
+        new_sfcs[:old_num_classes] = self.sfcs.data
+        self.register_buffer('sfcs', new_sfcs)
+        
         self.num_classes = new_num_classes
+
+    def update_sfcs(self, dataloader, device, extra_x=None, extra_y=None):
+        """
+        Update Semantic Feature Centers (SFCs) as the mean of the deep features 
+        of each class in the dataset. (Eq 1 from Open-ICL paper)
+        """
+        self.eval()
+        sum_features = torch.zeros(self.num_classes, self.feature_dim).to(device)
+        count_features = torch.zeros(self.num_classes).to(device)
+        
+        with torch.no_grad():
+            for batch_x, batch_y, _ in dataloader:
+                batch_x = batch_x.to(device)
+                batch_y = batch_y.to(device)
+                
+                out = F.relu(self.bn1(self.conv1(batch_x)))
+                out = self.maxpool(out)
+                out = self.layer1(out)
+                out = self.layer2(out)
+                out = self.layer3(out)
+                out = self.layer4(out)
+                out = self.avgpool(out)
+                features = out.view(out.size(0), -1) 
+                contrast_features = self.cop(features)
+                
+                for i in range(self.num_classes):
+                    class_mask = (batch_y == i)
+                    if class_mask.any():
+                        sum_features[i] += contrast_features[class_mask].sum(dim=0)
+                        count_features[i] += class_mask.sum()
+            
+            if extra_x is not None and extra_y is not None and len(extra_x) > 0:
+                # Process extra samples (e.g. from USB) in batches to avoid OOM
+                batch_size = 512
+                for start_idx in range(0, len(extra_x), batch_size):
+                    batch_x = extra_x[start_idx:start_idx+batch_size].to(device)
+                    batch_y = extra_y[start_idx:start_idx+batch_size].to(device)
+                    
+                    out = F.relu(self.bn1(self.conv1(batch_x)))
+                    out = self.maxpool(out)
+                    out = self.layer1(out)
+                    out = self.layer2(out)
+                    out = self.layer3(out)
+                    out = self.layer4(out)
+                    out = self.avgpool(out)
+                    features = out.view(out.size(0), -1) 
+                    contrast_features = self.cop(features)
+                    
+                    for i in range(self.num_classes):
+                        class_mask = (batch_y == i)
+                        if class_mask.any():
+                            sum_features[i] += contrast_features[class_mask].sum(dim=0)
+                            count_features[i] += class_mask.sum()
+
+        # Avoid division by zero
+        count_features[count_features == 0] = 1
+        new_sfcs = sum_features / count_features.unsqueeze(1)
+        self.sfcs.data.copy_(new_sfcs)

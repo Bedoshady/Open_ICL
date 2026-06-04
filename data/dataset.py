@@ -56,7 +56,7 @@ class RadioMLDataset(Dataset):
         return x, y, idx
 
 def get_dataloaders(file_path, known_classes, unknown_classes=None,
-                    batch_size=128, min_snr=0, use_pk_sampler=True,
+                    batch_size=128, min_snr=0, use_pk_sampler=False,
                     P=6, K=8):
     """
     Build train / validation DataLoaders.

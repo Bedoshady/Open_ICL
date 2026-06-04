@@ -1,10 +1,10 @@
 import torch
+import torch.nn.functional as F
 import os
 import numpy as np
 from sklearn.metrics import f1_score, roc_auc_score
 
 from models.donet import DONet
-from core.evt import DynamicEVT
 from data.dataset import get_dataloaders
 
 def evaluate_model():
@@ -18,37 +18,35 @@ def evaluate_model():
         
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     known_classes = checkpoint['known_classes']
-    num_known = len(known_classes)
+    dat_threshold = checkpoint.get('dat_threshold', 0.0)
+    num_classes = len(known_classes)
     
-    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
+    # Original known classes (before incremental learning)
+    original_known_classes = ['8PSK', 'BPSK', 'QPSK', 'QAM16', 'QAM64', 'PAM4']
+    num_original_known = len(original_known_classes)
+    
+    use_simple_proj = checkpoint.get('use_simple_projection', True)
+    model = DONet(num_known_classes=num_classes, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    # Reconstruct EVT
-    evt = DynamicEVT(tail_size=0.05)
-    if 'evt_models' in checkpoint and 'evt_centroids' in checkpoint:
-        evt.models = checkpoint['evt_models']
-        evt.centroids = checkpoint['evt_centroids']
-    else:
-        print("Warning: EVT parameters not found in checkpoint!")
-        return
-    
     # Load validation data (including unknown classes)
     all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
-    unknown_classes = [c for c in all_classes if c not in known_classes]
+    unknown_classes = [c for c in all_classes if c not in original_known_classes]
     
     _, val_loader = get_dataloaders(
         'RML2016.10a_dict.pkl', 
-        known_classes=known_classes, 
+        known_classes=original_known_classes, 
         unknown_classes=unknown_classes,
         batch_size=128
     )
     
-    print("\n--- Running Evaluation with Triplet Loss + EVT ---")
+    print("\n--- Running Evaluation with CLP/COP DAT Anomaly Detection ---")
+    print(f"DAT Threshold from training: {dat_threshold:.4f}")
     
     y_true_binary = []  # 0 for known, 1 for unknown
-    y_scores = []       # Anomaly score (1 - probability of being known)
-    y_pred_binary = []  # Binary prediction based on EVT probability
+    y_scores = []       # Anomaly score (min distance to SFC)
+    y_pred_binary = []  # Binary prediction based on DAT threshold
     
     correct_known = 0
     total_known = 0
@@ -57,30 +55,37 @@ def evaluate_model():
         for batch_x, batch_y, _ in val_loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             
-            # The model now natively computes only the contrast features
-            contrast_features = model(batch_x)
+            # The model computes logits, contrast features, and distances
+            logits, contrast_features, distances = model(batch_x)
             
-            # Use EVT to predict probabilities and classes
-            probs, pred_classes = evt.predict_prob(contrast_features)
+            # Compute class predictions via CLP logits
+            pred_classes = logits.argmax(dim=1)
+            pred_classes_np = pred_classes.cpu().numpy()
             
-            # Record for Open-Set Metrics
+            # Minimum distance to any known class SFC
+            min_dists, _ = distances.min(dim=1)
+            min_dists_np = min_dists.cpu().numpy()
+            
+            # Ground Truth Binary: batch_y is -1 for any unknown signal sample
             is_unknown = (batch_y == -1).cpu().numpy()
             y_true_binary.extend(is_unknown.astype(int))
             
-            # Higher score = more likely to be unknown
-            anomaly_scores = 1.0 - probs.cpu().numpy()
+            # 1. Anomaly Score: Force max score (2.0) if it hits a novel cluster, else use min distance
+            anomaly_scores = np.where(pred_classes_np >= num_original_known, 2.0, min_dists_np)
             y_scores.extend(anomaly_scores)
             
-            # Predict unknown if probability of known is < 5%
-            predictions = (probs.cpu().numpy() < 0.05).astype(int)
+            # 2. Binary Prediction: Flag as Unknown (1) if min distance > dat_threshold OR if it falls into a novel cluster
+            predictions = ((min_dists_np > dat_threshold) | (pred_classes_np >= num_original_known)).astype(int)
             y_pred_binary.extend(predictions)
             
-            # Classification Accuracy (only on known classes)
+            # 3. Closed-Set Accuracy: Evaluated ONLY on the original known classes
             known_mask = batch_y >= 0
             if known_mask.any():
-                true_known_labels = batch_y[known_mask]
-                pred_known_labels = pred_classes[known_mask]
-                correct_known += (pred_known_labels == true_known_labels).sum().item()
+                true_known_labels = batch_y[known_mask].cpu().numpy()
+                pred_known_labels = pred_classes_np[known_mask.cpu().numpy()]
+                
+                # Must match the correct original known index perfectly
+                correct_known += (pred_known_labels == true_known_labels).sum()
                 total_known += known_mask.sum().item()
 
     y_true_binary = np.array(y_true_binary)
@@ -98,7 +103,7 @@ def evaluate_model():
     
     print("\nResults:")
     print(f"Closed-Set Classification Accuracy (Knowns): {acc*100:.2f}%")
-    print(f"Open-Set Detection F1-Score (EVT < 5%): {os_f1:.4f}")
+    print(f"Open-Set Detection F1-Score (DAT Threshold = {dat_threshold:.4f}): {os_f1:.4f}")
     print(f"Open-Set Detection AUROC: {os_auc:.4f}")
 
 if __name__ == '__main__':

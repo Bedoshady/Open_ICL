@@ -1,24 +1,26 @@
+from core.loss import BatchAllTripletLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
 import os
 
 from models.donet import DONet
-from core.loss import BatchHardTripletLoss, CenterLoss, get_margin
-from core.evt import DynamicEVT
+from core.loss import get_margin
+from core.threshold import DynamicAdaptiveThreshold
 from core.mia import MovingIntersectionAlgorithm
 from utils.usb import UnknownSignalBank
-from utils.logger import TrainingLogger, EarlyStopping
 from data.dataset import get_dataloaders
 
 # ── Toggles ─────────────────────────────────────────────────────────────
-USE_CENTER_LOSS   = True      # combine triplet + center loss
-LAMBDA_CENTER     = 0.01      # weight for center loss term
-USE_MARGIN_SCHED  = True      # linearly ramp margin from 0.5→1.0
-MARGIN_START      = 0.5
+USE_SOFT_MARGIN   = True      # use soft-margin triplet loss from paper
+USE_SIMPLE_PROJ   = True      # use simple linear projection from standard ResNet-18
+USE_MARGIN_SCHED  = False     # linearly ramp margin (ignored if USE_SOFT_MARGIN=True)
+MARGIN_START      = 1.0
 MARGIN_END        = 1.0
 MARGIN_RAMP_EPOCHS = 10
+ALPHA             = 0.5       # Joint loss weighting: alpha * ce + (1-alpha) * triplet
 # ─────────────────────────────────────────────────────────────────────────
+
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -47,51 +49,48 @@ def main():
         known_classes=known_classes, 
         unknown_classes=unknown_classes,
         batch_size=512,          # fallback if PKSampler disabled
-        use_pk_sampler=True,
-        P=6, K=8
+        use_pk_sampler=False,
+        P=6, K=32
     )
     
     num_known = len(known_classes)
-    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
+    model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=USE_SIMPLE_PROJ).to(device)
     
     # ── Loss ────────────────────────────────────────────────────────────
-    criterion = BatchHardTripletLoss(margin=MARGIN_END).to(device)
-    center_loss_fn = None
-    center_optimizer = None
-    if USE_CENTER_LOSS:
-        center_loss_fn = CenterLoss(num_classes=num_known,
-                                     feat_dim=128,
-                                     device=device).to(device)
-        # Separate optimizer for centers (higher LR so they track quickly)
-        center_optimizer = optim.SGD(center_loss_fn.parameters(), lr=0.5)
+    criterion = BatchAllTripletLoss().to(device)
 
     # ── Optimiser & Scheduler ───────────────────────────────────────────
-    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
+    # Paper uses Adam optimizer with learning rate of 0.0006
+    optimizer = optim.Adam(model.parameters(), lr=0.0006, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
         factor=0.5,
-        patience=3,
-        min_lr=1e-6,
+        patience=5,
+        min_lr=1e-5,
     )
     
-    evt = DynamicEVT(tail_size=0.05)
+    # Dynamic Adaptive Threshold (DAT) for signal novelty detection
+    dat = DynamicAdaptiveThreshold(alpha=0.95)
     mia = MovingIntersectionAlgorithm(L=5)
     usb = UnknownSignalBank(max_size=40000)
     
-    num_epochs = 30
+    num_epochs = 50
     warmup_epochs = 5
     
     # ── Logging & Early Stop ────────────────────────────────────────────
-    logger = TrainingLogger(log_path="logs/training_log.csv")
-    early_stop = EarlyStopping(patience=7, min_delta=1e-4)
+   # logger = TrainingLogger(log_path="logs/training_log.csv")
+    #early_stop = EarlyStopping(patience=7, min_dpythelta=1e-4)
     
     # Create directory for checkpoints
     os.makedirs("checkpoints", exist_ok=True)
     
     for epoch in range(num_epochs):
+        # Update SFCs as per Algorithm 1 in Open-ICL paper
+        model.update_sfcs(train_loader, device)
+        
         model.train()
-        logger.epoch_start()
+        #logger.epoch_start()
 
         # Current margin for this epoch
         if USE_MARGIN_SCHED:
@@ -104,65 +103,48 @@ def main():
         epoch_candidates = set()
         epoch_candidate_data = {}
         
-        # Accumulate known features for EVT fitting at epoch end
-        epoch_known_features = []
-        epoch_known_labels = []
-        
         for batch_x, batch_y, batch_idx in train_loader:
             batch_x, batch_y, batch_idx = batch_x.to(device), batch_y.to(device), batch_idx.to(device)
             
             optimizer.zero_grad()
-            if center_optimizer is not None:
-                center_optimizer.zero_grad()
             
-            # The model now natively computes purely the Contrast Features
-            contrast_features = model(batch_x)
+            # Forward pass: DONet returns (logits, contrast_features, distances)
+            logits, contrast_features, distances = model(batch_x)
             
-            # Calculate Triplet Loss with the epoch-dependent margin
-            loss = criterion(contrast_features, batch_y, margin_override=current_margin)
-
-            # Optionally add Center Loss
-            if USE_CENTER_LOSS and center_loss_fn is not None:
-                c_loss = center_loss_fn(contrast_features, batch_y)
-                loss = loss + LAMBDA_CENTER * c_loss
+            # Filter known samples for loss calculation
+            known_mask = (batch_y != -1)
             
-            if loss.requires_grad:
-                loss.backward()
-                optimizer.step()
-                if center_optimizer is not None:
-                    center_optimizer.step()
-                total_loss += loss.item()
-                num_batches += 1
+            if known_mask.sum() > 0:
+                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * triplet_loss
+                ce_loss = F.cross_entropy(logits[known_mask], batch_y[known_mask])
+                triplet_loss = criterion(contrast_features[known_mask], batch_y[known_mask], margin_override=current_margin)
+                loss = ALPHA * ce_loss + (1.0 - ALPHA) * triplet_loss
+     
+                if loss.requires_grad:
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                    num_batches += 1
                 
-            # Accumulate features for EVT and detect unknowns
+            # Accumulate features and detect unknowns via CLP/COP distance metric & DAT
             with torch.no_grad():
-                known_mask = batch_y >= 0
-                if known_mask.any():
-                    epoch_known_features.append(contrast_features[known_mask].detach())
-                    epoch_known_labels.append(batch_y[known_mask].detach())
+                # Update DAT threshold with known samples
+                if known_mask.sum() > 0:
+                    dat.update(distances[known_mask], batch_y[known_mask])
                 
-                # USB Population (after warmup)
-                if epoch >= warmup_epochs and evt.models:
-                    # Evaluate EVT probability
-                    probs, _ = evt.predict_prob(contrast_features)
-                    
-                    # Prob < 0.05 indicates extreme distance -> Unknown
-                    anomalies = probs < 0.05
-                    
-                    if anomalies.any():
-                        anomaly_indices = anomalies.nonzero(as_tuple=True)[0]
-                        for idx_pos in anomaly_indices:
-                            global_idx = batch_idx[idx_pos].item()
-                            epoch_candidates.add(global_idx)
-                            epoch_candidate_data[global_idx] = (batch_x[idx_pos].cpu(), contrast_features[idx_pos].cpu())
+                # USB Population (after warmup) using DAT threshold
+                if epoch >= warmup_epochs:
+                    current_threshold = dat.get_threshold()
+                    if current_threshold > 0:
+                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                        epoch_candidates.update(candidates)
+                        
+                        # Temporarily store the signals/features of candidates for this epoch
+                        for idx_val in candidates:
+                            # Find the local batch position for this global index
+                            local_pos = (batch_idx == idx_val).nonzero(as_tuple=True)[0][0]
+                            epoch_candidate_data[idx_val] = (batch_x[local_pos].cpu(), contrast_features[local_pos].cpu())
                             
-        # End of epoch: Fit EVT
-        with torch.no_grad():
-            if epoch_known_features:
-                all_features = torch.cat(epoch_known_features, dim=0)
-                all_labels = torch.cat(epoch_known_labels, dim=0)
-                evt.fit(all_features, all_labels)
-                
         # End of epoch: evaluate MIA intersection
         if epoch >= warmup_epochs:
             reliable_indices = mia.update_epoch(epoch_candidates)
@@ -183,36 +165,20 @@ def main():
         # Step the plateau-aware scheduler
         scheduler.step(avg_loss)
 
-        # Log to CSV
-        logger.epoch_end(
-            epoch=epoch + 1,
-            loss=avg_loss,
-            lr=current_lr,
-            margin=current_margin,
-            usb_size=len(usb.signals),
-        )
 
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, "
               f"LR: {current_lr:.6f}, Margin: {current_margin:.2f}")
         print(f"Signals currently in Unknown Signal Bank: {len(usb.signals)}")
 
-        # Early stopping check
-        if early_stop.step(avg_loss):
-            print(f"Stopping early at epoch {epoch+1}.")
-            break
-
     # Save initial model state
     save_dict = {
         'model_state_dict': model.state_dict(),
         'known_classes': known_classes,
-        'evt_models': evt.models,
-        'evt_centroids': evt.centroids,
+        'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
+        'use_simple_projection': USE_SIMPLE_PROJ,
     }
-    if USE_CENTER_LOSS and center_loss_fn is not None:
-        save_dict['center_loss_state'] = center_loss_fn.state_dict()
-
     torch.save(save_dict, "checkpoints/phase1_model.pth")
     
     print("\nPhase 1 Training Complete! Model saved.")

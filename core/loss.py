@@ -25,10 +25,11 @@ class BatchHardTripletLoss(nn.Module):
     For each anchor in the batch, it finds the hardest positive (furthest sample of the same class)
     and the hardest negative (closest sample of a different class).
     """
-    def __init__(self, margin=1.0, squared=False):
+    def __init__(self, margin=1.0, squared=False, use_soft_margin=True):
         super(BatchHardTripletLoss, self).__init__()
         self.margin = margin
         self.squared = squared
+        self.use_soft_margin = use_soft_margin
 
     def forward(self, embeddings, labels, margin_override=None):
         """
@@ -48,20 +49,11 @@ class BatchHardTripletLoss(nn.Module):
         if len(embeddings) < 2:
             return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
 
-        # Normalize embeddings to lie on a hypersphere
-        embeddings = F.normalize(embeddings, p=2, dim=1)
-
-        # Compute pairwise distance matrix
-        # d(x,y)^2 = ||x||^2 - 2<x,y> + ||y||^2
-        dot_product = torch.matmul(embeddings, embeddings.t())
-        square_norm = torch.diag(dot_product)
-        dist_sq = square_norm.unsqueeze(0) - 2.0 * dot_product + square_norm.unsqueeze(1)
-        dist_sq = torch.clamp(dist_sq, min=0.0) # Ensure non-negative
-
+        # Compute pairwise distance matrix using cdist for numerical stability on unnormalized features
+        dist = torch.cdist(embeddings, embeddings, p=2)
+        
         if self.squared:
-            dist = dist_sq
-        else:
-            dist = torch.sqrt(dist_sq + 1e-8) # Add epsilon for numerical stability
+            dist = dist ** 2
 
         # Create masks for positive and negative pairs
         labels_equal = labels.unsqueeze(0) == labels.unsqueeze(1)
@@ -81,11 +73,19 @@ class BatchHardTripletLoss(nn.Module):
         neg_dist_masked = dist + max_dist * (~neg_mask).float()
         hardest_negative_dist, _ = neg_dist_masked.min(dim=1)
 
-        # Triplet loss: max(0, d(A, P) - d(A, N) + margin)
-        triplet_loss = F.relu(hardest_positive_dist - hardest_negative_dist + margin)
+        # Triplet loss
+        if self.use_soft_margin:
+            # Soft-margin: ln(1 + exp(d(A, P) - d(A, N)))
+            triplet_loss = F.softplus(hardest_positive_dist - hardest_negative_dist)
+        else:
+            # Hard-margin: max(0, d(A, P) - d(A, N) + margin)
+            triplet_loss = F.relu(hardest_positive_dist - hardest_negative_dist + margin)
 
-        # Only compute mean over anchors that have both valid positives and negatives
-        valid_triplets = (hardest_positive_dist > 0) & (hardest_negative_dist < max_dist.squeeze(-1))
+        # Only compute mean over anchors that have both valid positives and negatives in the batch
+        # We determine this using the masks (based on labels) rather than distances to avoid the collapse trap.
+        has_pos = pos_mask.any(dim=1)
+        has_neg = neg_mask.any(dim=1)
+        valid_triplets = has_pos & has_neg
         
         if not valid_triplets.any():
             return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
@@ -93,6 +93,78 @@ class BatchHardTripletLoss(nn.Module):
         return triplet_loss[valid_triplets].mean()
 
 
+class BatchAllTripletLoss(nn.Module):
+    """
+    Online Batch-All Triplet Loss for Metric Learning.
+    Enumerates all valid (anchor, positive, negative) triplets in the batch,
+    computes softplus(d(a,p) - d(a,n)) for each, and averages only over
+    non-zero-loss triplets (semi-hard + hard).
+    """
+    def __init__(self, squared=False):
+        super(BatchAllTripletLoss, self).__init__()
+        self.squared = squared
+
+    def forward(self, embeddings, labels, margin_override=None):
+        """
+        Args:
+            embeddings: Tensor of shape (batch_size, embed_dim)
+            labels: Tensor of shape (batch_size,)
+            margin_override: Ignored, retained for API compatibility with curriculum.
+        """
+        # Ignore unknown classes (label -1) during known-class training
+        valid_idx = labels >= 0
+        embeddings = embeddings[valid_idx]
+        labels = labels[valid_idx]
+
+        if len(embeddings) < 3:
+            return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+        # Compute pairwise distance matrix
+        dist = torch.cdist(embeddings, embeddings, p=2)
+        if self.squared:
+            dist = dist ** 2
+
+        # Broadcast pairwise distances into a 3D tensor of shape (N, N, N)
+        # triplet_dist[a, p, n] = d(a, p) - d(a, n)
+        d_ap = dist.unsqueeze(2)  # Shape: (N, N, 1)
+        d_an = dist.unsqueeze(1)  # Shape: (N, 1, N)
+        triplet_dist = d_ap - d_an  # Shape: (N, N, N)
+
+        # Build the 3D valid triplet mask
+        # 1. Anchor and Positive must have the same label, Anchor and Negative must have different labels
+        labels_equal = labels.unsqueeze(0) == labels.unsqueeze(1) # (N, N)
+        
+        mask_ap = labels_equal.unsqueeze(2)      # (N, N, 1) -> True where label(a) == label(p)
+        mask_an = (~labels_equal).unsqueeze(1)    # (N, 1, N) -> True where label(a) != label(n)
+
+        # 2. Exclude self-comparisons (Anchor != Positive, Anchor != Negative)
+        eye = torch.eye(labels.size(0), device=labels.device, dtype=torch.bool)
+        mask_a_not_p = (~eye).unsqueeze(2)        # (N, N, 1)
+        mask_a_not_n = (~eye).unsqueeze(1)        # (N, 1, N)
+
+        # Combine into a single valid triplet mask of shape (N, N, N)
+        valid_triplet_mask = mask_ap & mask_an & mask_a_not_p & mask_a_not_n
+
+        if not valid_triplet_mask.any():
+            return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+        # Extract distances for valid triplets
+        valid_distances = triplet_dist[valid_triplet_mask]
+
+        # Compute loss using softplus: ln(1 + exp(d(a,p) - d(a,n)))
+        loss_values = F.softplus(valid_distances)
+
+        # Filter for non-zero-loss triplets (semi-hard + hard)
+        # In practice, softplus(x) > 0 for all real numbers, but we mathematically 
+        # isolate positive signals or non-negligible losses based on standard thresholds.
+        positive_loss_mask = loss_values > 1e-6
+        active_losses = loss_values[positive_loss_mask]
+
+        if active_losses.numel() == 0:
+            return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+        return active_losses.mean()
+        
 class CenterLoss(nn.Module):
     """
     Center Loss — pulls embeddings of each class toward a learnable centroid.
