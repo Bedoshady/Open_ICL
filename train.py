@@ -3,6 +3,7 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 import os
+import argparse
 
 from models.donet import DONet
 from core.loss import get_margin
@@ -23,6 +24,11 @@ ALPHA             = 0.5       # Joint loss weighting: alpha * ce + (1-alpha) * t
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Phase 1 Training')
+    parser.add_argument('--known_classes', type=str, required=True, help='Comma separated list of known classes')
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
+    args = parser.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -34,11 +40,9 @@ def main():
     # RadioML 2016.10a modulations
     all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
     
-    # Split into known and unknown to minimize confusion (test theory)
-    # Known: All Phase/Amplitude shift keying
-    known_classes = ['8PSK', 'BPSK', 'QPSK', 'QAM16', 'QAM64', 'PAM4']
-    # Unknown: All AM/FM/FSK continuous modulations
-    unknown_classes = ['AM-DSB', 'AM-SSB', 'CPFSK', 'GFSK', 'WBFM']
+    # Split into known and unknown from args
+    known_classes = [c.strip() for c in args.known_classes.split(',')]
+    unknown_classes = [c for c in all_classes if c not in known_classes]
     
     print(f"Known classes: {known_classes}")
     print(f"Unknown classes: {unknown_classes}")
@@ -83,7 +87,7 @@ def main():
     #early_stop = EarlyStopping(patience=7, min_dpythelta=1e-4)
     
     # Create directory for checkpoints
-    os.makedirs("checkpoints", exist_ok=True)
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
     
     for epoch in range(num_epochs):
         # Update SFCs as per Algorithm 1 in Open-ICL paper
@@ -179,7 +183,8 @@ def main():
         'usb_features': usb.features,
         'use_simple_projection': USE_SIMPLE_PROJ,
     }
-    torch.save(save_dict, "checkpoints/phase1_model.pth")
+    checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
+    torch.save(save_dict, checkpoint_path)
     
     print("\nPhase 1 Training Complete! Model saved.")
     print("Now ready for Incremental Learning (Phase 2).")

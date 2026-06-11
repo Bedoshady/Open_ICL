@@ -2,16 +2,21 @@ import torch
 import torch.nn.functional as F
 import os
 import numpy as np
+import argparse
 from sklearn.metrics import f1_score, roc_auc_score
 
 from models.donet import DONet
 from data.dataset import get_dataloaders
 
 def evaluate_model():
+    parser = argparse.ArgumentParser(description='Evaluation')
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
+    args = parser.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Evaluating on device: {device}")
     
-    checkpoint_path = "checkpoints/phase1_model.pth"
+    checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
     if not os.path.exists(checkpoint_path):
         print("Model checkpoint not found. Run train.py first.")
         return
@@ -22,7 +27,7 @@ def evaluate_model():
     num_classes = len(known_classes)
     
     # Original known classes (before incremental learning)
-    original_known_classes = ['8PSK', 'BPSK', 'QPSK', 'QAM16', 'QAM64', 'PAM4']
+    original_known_classes = known_classes
     num_original_known = len(original_known_classes)
     
     use_simple_proj = checkpoint.get('use_simple_projection', True)

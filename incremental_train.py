@@ -4,17 +4,22 @@ import torch.optim as optim
 import torch.nn.functional as F
 import os
 import numpy as np
+import argparse
 
 from models.donet import DONet
 from utils.usb import UnknownSignalBank
 from data.dataset import get_dataloaders
 
 def run_incremental_learning():
+    parser = argparse.ArgumentParser(description='Phase 2 Incremental Training')
+    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
+    args = parser.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
     # 1. Load the Phase 1 model
-    checkpoint_path = "checkpoints/phase1_model.pth"
+    checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
     if not os.path.exists(checkpoint_path):
         print("Please run train.py first to generate the phase1_model.pth checkpoint.")
         return
@@ -179,7 +184,7 @@ def run_incremental_learning():
         'usb_signals': usb.signals,
         'usb_features': usb.features,
         'use_simple_projection': use_simple_proj
-    }, "checkpoints/phase2_incremental_model.pth")
+    }, os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth"))
     
     print(f"\nIncremental Learning Complete!")
     print(f"New model saved with {total_classes} classes: {known_classes + novel_class_names}")
