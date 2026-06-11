@@ -6,7 +6,7 @@
 #SBATCH --account=def-rsadve
 
 # Load modules and activate environment
-module load python/3.10
+module load python/3.12
 module load scipy-stack
 source myDRLenv/bin/activate
 
