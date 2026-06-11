@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --gres=gpu:1 # Request GPU "generic resources"
+#SBATCH --gpus-per-node=a100:1 
 #SBATCH --cpus-per-task=6 # Cores proportional to GPUs
 #SBATCH --mem=32000M # Memory proportional to GPUs
 #SBATCH --time=0-03:00:00 # DD-HH:MM:SS
