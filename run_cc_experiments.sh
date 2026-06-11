@@ -6,9 +6,15 @@
 #SBATCH --account=def-rsadve
 
 # Load modules and activate environment
+module load StdEnv/2023
 module load python/3.12
+module load cuda/12.2
 module load scipy-stack
+
+virtualenv --no-download myDRLenv
 source myDRLenv/bin/activate
+pip install --no-index torch torchvision torchtext torchaudio
+pip install scikit-learn numpy
 
 # Define arrays for the sub-datasets
 declare -a names=("4_known_core" "6_known_analog" "6_known_fsk" "6_known_qam_pam" "8_known_mixed")
