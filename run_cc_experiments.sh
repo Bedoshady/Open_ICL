@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --gpus-per-node=a100:1 
+#SBATCH --gpus-per-node=nvidia_h100_80gb_hbm3_1g.10gb:1 
 #SBATCH --cpus-per-task=6 # Cores proportional to GPUs
 #SBATCH --mem=32000M # Memory proportional to GPUs
 #SBATCH --time=0-03:00:00 # DD-HH:MM:SS
