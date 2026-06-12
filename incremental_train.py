@@ -100,7 +100,7 @@ def run_incremental_learning():
         usb_signals = torch.empty((0, 2, 128))
         usb_labels = torch.empty((0,), dtype=torch.long)
         
-    num_epochs = 5  # more epochs to benefit from scheduler
+    num_epochs = 50  # more epochs to benefit from scheduler
     usb_batch_size = 32
     
     for epoch in range(num_epochs):
