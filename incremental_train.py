@@ -154,6 +154,7 @@ def run_incremental_learning():
         avg_loss = total_loss / max(1, batches)
         current_lr = optimizer.param_groups[0]['lr']
         scheduler.step(avg_loss)
+        print(f"Epoch {epoch+1}/{num_epochs}, Incremental Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
 
     # 6. Re-calculate DAT threshold on updated features (known + newly discovered)
     print("\n--- Step 5: Re-calculating DAT Threshold on Incremental Features ---")
