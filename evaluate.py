@@ -16,20 +16,31 @@ def evaluate_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Evaluating on device: {device}")
     
-    checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
-    if not os.path.exists(checkpoint_path):
+    checkpoint_path_p2 = os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth")
+    checkpoint_path_p1 = os.path.join(args.checkpoint_dir, "phase1_model.pth")
+    
+    if os.path.exists(checkpoint_path_p2):
+        checkpoint_path = checkpoint_path_p2
+        print(f"Loading Phase 2 Incremental Model from {checkpoint_path}")
+    elif os.path.exists(checkpoint_path_p1):
+        checkpoint_path = checkpoint_path_p1
+        print(f"Loading Phase 1 Model from {checkpoint_path}")
+    else:
         print("Model checkpoint not found. Run train.py first.")
         return
         
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    known_classes = checkpoint['known_classes']
+    original_known_classes = checkpoint['known_classes']
+    discovered_classes = checkpoint.get('discovered_classes', [])
     dat_threshold = checkpoint.get('dat_threshold', 0.0)
-    num_classes = len(known_classes)
     
-    # Original known classes (before incremental learning)
-    original_known_classes = known_classes
     num_original_known = len(original_known_classes)
+    num_classes = num_original_known + len(discovered_classes)
     
+    print(f"Original Classes are {original_known_classes} and the number of original known classes is {num_original_known}")
+    if discovered_classes:
+        print(f"Discovered Novel Classes: {discovered_classes}")
+    print("")
     use_simple_proj = checkpoint.get('use_simple_projection', True)
     model = DONet(num_known_classes=num_classes, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])

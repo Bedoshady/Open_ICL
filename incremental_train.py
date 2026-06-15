@@ -180,7 +180,8 @@ def run_incremental_learning():
     novel_class_names = [f"Novel_{i}" for i in range(n_new_classes)]
     torch.save({
         'model_state_dict': model.state_dict(),
-        'known_classes': known_classes + novel_class_names,
+        'known_classes': known_classes,
+        'discovered_classes': novel_class_names,
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
@@ -188,7 +189,7 @@ def run_incremental_learning():
     }, os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth"))
     
     print(f"\nIncremental Learning Complete!")
-    print(f"New model saved with {total_classes} classes: {known_classes + novel_class_names}")
+    print(f"New model saved with {total_classes} classes: {known_classes} + {novel_class_names}")
 
 if __name__ == '__main__':
     run_incremental_learning()
