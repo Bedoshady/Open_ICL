@@ -74,6 +74,13 @@ class DONet(nn.Module):
         self.num_classes = num_known_classes
         self.feature_dim = feature_dim
         
+        # Distance Measurement (DM) module: Linear + Sigmoid
+        # Maps the absolute difference |z_i - z_k| to a novelty probability
+        self.dm = nn.Sequential(
+            nn.Linear(feature_dim, 1),
+            nn.Sigmoid()
+        )
+        
         # Apply Kaiming initialization
         self._initialize_weights()
         
@@ -117,10 +124,23 @@ class DONet(nn.Module):
         contrast_features = F.normalize(contrast_features, p=2, dim=1)
         sfc_normalized = F.normalize(self.sfcs, p=2, dim=1)
         
-        # Calculate Euclidean distances between signals and all known class centers (SFCs)
+        # Calculate Euclidean distances for conventional DAT/Thresholding
         distances = torch.cdist(contrast_features, sfc_normalized, p=2)
         
-        return logits, contrast_features, distances
+        # Calculate Contrast Probabilities using the DM module
+        # For each signal, we want to find the contrast probability against all SFCs
+        # contrast_features: [B, D]
+        # sfc_normalized: [K, D]
+        # We need the absolute difference |z_i - z_k| -> [B, K, D]
+        diffs = torch.abs(contrast_features.unsqueeze(1) - sfc_normalized.unsqueeze(0)) # [B, K, D]
+        
+        # Pass through DM module -> [B, K, 1] -> [B, K]
+        contrast_probs = self.dm(diffs).squeeze(-1)
+        
+        # Signal novelty y_i^* is the minimum distance (probability) across all known classes
+        y_novelty = torch.min(contrast_probs, dim=1)[0]
+        
+        return logits, contrast_features, contrast_probs, y_novelty, distances
 
     def update_num_classes(self, new_num_classes):
         """

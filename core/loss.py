@@ -199,3 +199,46 @@ class CenterLoss(nn.Module):
         batch_centers = self.centers[labels]
         loss = (embeddings - batch_centers).pow(2).sum(dim=1).mean()
         return loss
+
+class BCEContrastLoss(nn.Module):
+    """
+    Binary Cross Entropy Contrastive Loss as defined in the Open-ICL paper (Equation 6).
+    Pairs signal features with Semantic Feature Centers (SFCs).
+    A pair is 'positive' (label 0) if they belong to the same class,
+    and 'negative' (label 1) otherwise.
+    """
+    def __init__(self):
+        super(BCEContrastLoss, self).__init__()
+
+    def forward(self, contrast_probs, labels, num_classes):
+        """
+        Args:
+            contrast_probs: Tensor of shape (batch_size, num_classes) representing \tilde{y}_i^{k*}
+                            This is the novelty probability output of the DM module.
+            labels: Tensor of shape (batch_size,)
+            num_classes: int, the number of known classes (K) corresponding to the SFCs.
+        """
+        # Filter valid labels (ignore -1)
+        valid_idx = labels >= 0
+        if not valid_idx.any():
+            return torch.tensor(0.0, device=contrast_probs.device, requires_grad=True)
+            
+        contrast_probs = contrast_probs[valid_idx]
+        labels = labels[valid_idx]
+        
+        batch_size = labels.size(0)
+        # Initialize all contrast labels to 1 (negative pairs)
+        contrast_labels = torch.ones((batch_size, num_classes), device=labels.device)
+        
+        # For known samples (label < num_classes), set the matching SFC label to 0 (positive pair)
+        known_mask = labels < num_classes
+        if known_mask.any():
+            known_labels = labels[known_mask]
+            # Scatter 0 into the correct class index
+            zeros = torch.zeros((known_labels.size(0), 1), device=labels.device)
+            contrast_labels[known_mask] = contrast_labels[known_mask].scatter(1, known_labels.unsqueeze(1), zeros)
+            
+        # Compute standard Binary Cross Entropy
+        # PyTorch BCE includes the negative sign inherently missing from the paper's simplified equation
+        loss = F.binary_cross_entropy(contrast_probs, contrast_labels, reduction='mean')
+        return loss

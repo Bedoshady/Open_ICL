@@ -1,4 +1,4 @@
-from core.loss import BatchAllTripletLoss
+from core.loss import BCEContrastLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -48,17 +48,12 @@ def run_incremental_learning():
         print("USB is empty — no unknown signals were discovered during training. Exiting.")
         return
 
-    # 3. Cluster the unknowns dynamically
-    print("\n--- Step 2: Dynamic Clustering of Unknowns ---")
-    pseudo_labels, n_new_classes = usb.discover_new_classes(n_clusters=None)
-    print(f"Dynamically discovered {n_new_classes} new classes using Silhouette Score.")
-    
-    if n_new_classes == 0:
-        print("No new classes discovered from clustering. Exiting.")
-        return
-
-    # Offset pseudo labels by the number of known classes
-    pseudo_labels = pseudo_labels + num_known
+    # 3. Label Unknowns (K+1 discrimination)
+    print("\n--- Step 2: K+1 Discrimination Labeling ---")
+    n_new_classes = 1
+    # All unknown signals are labeled as the K-th index (which is the (K+1)-th class)
+    pseudo_labels = [num_known] * len(usb.signals)
+    print(f"Assigned {len(usb.signals)} signals to novel class index {num_known}.")
     
     # 4. Model Update
     # Since we removed the CLP, update_num_classes just tracks the count.
@@ -67,9 +62,9 @@ def run_incremental_learning():
     model.update_num_classes(total_classes)
     print(f"Model now tracking {total_classes} total classes ({num_known} known + {n_new_classes} novel).")
     
-    # 5. Fine-Tuning Phase with Sample Replay using Triplet Loss
-    print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (Triplet Loss) ---")
-    criterion = BatchAllTripletLoss().to(device)
+    # 5. Fine-Tuning Phase with Sample Replay using Contrast Loss
+    print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (BCE Contrast Loss) ---")
+    criterion = BCEContrastLoss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.0006, weight_decay=1e-4)
 
     # Scheduler
@@ -110,9 +105,6 @@ def run_incremental_learning():
         #inc_logger.epoch_start()
         total_loss = 0
         batches = 0
-
-        # Margin curriculum: ramp 0.5 → 1.0 over first 5 epochs
-        #current_margin = get_margin(epoch, 0.5, 1.0, ramp_epochs=5)
         
         # Iterate over the original dataset (Sample Replay)
         for batch_known_x, batch_known_y, _ in train_loader:
@@ -132,18 +124,18 @@ def run_incremental_learning():
             optimizer.zero_grad()
             #center_optimizer.zero_grad()
             
-            # Forward pass: model returns (logits, contrast_features, distances)
-            logits, contrast_features, distances = model(batch_x)
+            # Forward pass: model returns (logits, contrast_features, contrast_probs, y_novelty, distances)
+            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
             
             # Filter known samples for loss calculation (in case -1 labels exist)
             valid_mask = (batch_y != -1)
             
             if valid_mask.sum() > 0:
-                # Joint Loss: alpha * ce_loss + (1 - alpha) * triplet_loss
+                # Joint Loss: alpha * ce_loss + (1 - alpha) * contrast_loss
                 alpha = 0.5
                 ce_loss = F.cross_entropy(logits[valid_mask], batch_y[valid_mask])
-                triplet_loss = criterion(contrast_features[valid_mask], batch_y[valid_mask])
-                loss = alpha * ce_loss + (1.0 - alpha) * triplet_loss
+                contrast_loss = criterion(contrast_probs[valid_mask], batch_y[valid_mask], total_classes)
+                loss = alpha * ce_loss + (1.0 - alpha) * contrast_loss
                 
                 if loss.requires_grad:
                     loss.backward()
@@ -165,7 +157,7 @@ def run_incremental_learning():
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
-            _, _, distances = model(batch_x)
+            _, _, _, _, distances = model(batch_x)
             
             valid_mask = (batch_y != -1)
             if valid_mask.sum() > 0:
@@ -173,7 +165,7 @@ def run_incremental_learning():
             
         if len(usb_signals) > 0:
             usb_batch = usb_signals.to(device)
-            _, _, usb_distances = model(usb_batch)
+            _, _, _, _, usb_distances = model(usb_batch)
             dat.update(usb_distances, usb_labels.to(device))
 
     # Save the expanded model

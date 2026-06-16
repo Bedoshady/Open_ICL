@@ -1,4 +1,4 @@
-from core.loss import BatchAllTripletLoss
+from core.loss import BCEContrastLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -6,20 +6,14 @@ import os
 import argparse
 
 from models.donet import DONet
-from core.loss import get_margin
 from core.threshold import DynamicAdaptiveThreshold
 from core.mia import MovingIntersectionAlgorithm
 from utils.usb import UnknownSignalBank
 from data.dataset import get_dataloaders
 
 # ── Toggles ─────────────────────────────────────────────────────────────
-USE_SOFT_MARGIN   = True      # use soft-margin triplet loss from paper
 USE_SIMPLE_PROJ   = True      # use simple linear projection from standard ResNet-18
-USE_MARGIN_SCHED  = False     # linearly ramp margin (ignored if USE_SOFT_MARGIN=True)
-MARGIN_START      = 1.0
-MARGIN_END        = 1.0
-MARGIN_RAMP_EPOCHS = 10
-ALPHA             = 0.5       # Joint loss weighting: alpha * ce + (1-alpha) * triplet
+ALPHA             = 0.5       # Joint loss weighting: alpha * ce + (1-alpha) * contrast
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -61,7 +55,7 @@ def main():
     model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=USE_SIMPLE_PROJ).to(device)
     
     # ── Loss ────────────────────────────────────────────────────────────
-    criterion = BatchAllTripletLoss().to(device)
+    criterion = BCEContrastLoss().to(device)
 
     # ── Optimiser & Scheduler ───────────────────────────────────────────
     # Paper uses Adam optimizer with learning rate of 0.0006
@@ -95,13 +89,6 @@ def main():
         
         model.train()
         #logger.epoch_start()
-
-        # Current margin for this epoch
-        if USE_MARGIN_SCHED:
-            current_margin = get_margin(epoch, MARGIN_START, MARGIN_END, MARGIN_RAMP_EPOCHS)
-        else:
-            current_margin = MARGIN_END
-
         total_loss = 0
         num_batches = 0
         epoch_candidates = set()
@@ -112,17 +99,17 @@ def main():
             
             optimizer.zero_grad()
             
-            # Forward pass: DONet returns (logits, contrast_features, distances)
-            logits, contrast_features, distances = model(batch_x)
+            # Forward pass: DONet returns (logits, contrast_features, contrast_probs, y_novelty, distances)
+            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
             
             # Filter known samples for loss calculation
             known_mask = (batch_y != -1)
             
             if known_mask.sum() > 0:
-                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * triplet_loss
+                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * contrast_loss
                 ce_loss = F.cross_entropy(logits[known_mask], batch_y[known_mask])
-                triplet_loss = criterion(contrast_features[known_mask], batch_y[known_mask], margin_override=current_margin)
-                loss = ALPHA * ce_loss + (1.0 - ALPHA) * triplet_loss
+                contrast_loss = criterion(contrast_probs[known_mask], batch_y[known_mask], num_known)
+                loss = ALPHA * ce_loss + (1.0 - ALPHA) * contrast_loss
      
                 if loss.requires_grad:
                     loss.backward()
@@ -171,7 +158,7 @@ def main():
 
 
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, "
-              f"LR: {current_lr:.6f}, Margin: {current_margin:.2f}")
+              f"LR: {current_lr:.6f}")
         print(f"Signals currently in Unknown Signal Bank: {len(usb.signals)}")
 
     # Save initial model state
