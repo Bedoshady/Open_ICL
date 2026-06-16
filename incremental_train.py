@@ -28,8 +28,7 @@ def run_incremental_learning():
     known_classes = checkpoint['known_classes']
     num_known = len(known_classes)
     
-    use_simple_proj = checkpoint.get('use_simple_projection', True)
-    model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
+    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # 2. Load USB from checkpoint
@@ -177,7 +176,7 @@ def run_incremental_learning():
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
-        'use_simple_projection': use_simple_proj
+        'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
     }, os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth"))
     
     print(f"\nIncremental Learning Complete!")

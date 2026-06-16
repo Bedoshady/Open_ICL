@@ -41,8 +41,7 @@ def evaluate_model():
     if discovered_classes:
         print(f"Discovered Novel Classes: {discovered_classes}")
     print("")
-    use_simple_proj = checkpoint.get('use_simple_projection', True)
-    model = DONet(num_known_classes=num_classes, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
+    model = DONet(num_known_classes=num_classes, feature_dim=128).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
@@ -71,14 +70,14 @@ def evaluate_model():
         for batch_x, batch_y, _ in val_loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             
-            # The model computes logits, contrast features, and distances
-            logits, contrast_features, distances = model(batch_x)
+            # The model computes logits, contrast features, contrast probs, novelty score, and distances
+            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
             
             # Compute class predictions via CLP logits
             pred_classes = logits.argmax(dim=1)
             pred_classes_np = pred_classes.cpu().numpy()
             
-            # Minimum distance to any known class SFC
+            # Anomaly score: use y_novelty (min contrast prob), or equivalently min Euclidean distance
             min_dists, _ = distances.min(dim=1)
             min_dists_np = min_dists.cpu().numpy()
             

@@ -12,7 +12,7 @@ from utils.usb import UnknownSignalBank
 from data.dataset import get_dataloaders
 
 # ── Toggles ─────────────────────────────────────────────────────────────
-USE_SIMPLE_PROJ   = True      # use simple linear projection from standard ResNet-18
+USE_SIMPLE_PROJ   = False      # use full clp and cop
 ALPHA             = 0.5       # Joint loss weighting: alpha * ce + (1-alpha) * contrast
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ def main():
     )
     
     num_known = len(known_classes)
-    model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=USE_SIMPLE_PROJ).to(device)
+    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
     
     # ── Loss ────────────────────────────────────────────────────────────
     criterion = BCEContrastLoss().to(device)
@@ -168,7 +168,7 @@ def main():
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
-        'use_simple_projection': USE_SIMPLE_PROJ,
+        'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
     }
     checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
     torch.save(save_dict, checkpoint_path)
