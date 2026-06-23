@@ -30,21 +30,26 @@ class DONet(nn.Module):
     """
     Dual-Path 1-D Network (DONet) with ResNet-18 backbone
     """
-    def __init__(self, num_known_classes, feature_dim=128, use_simple_projection=True):
+    def __init__(self, num_known_classes, feature_dim=128, backbone_type='vit', use_simple_projection=True):
         super(DONet, self).__init__()
-        self.in_planes = 64
+        self.backbone_type = backbone_type
 
-        # ResNet-18 1D Backbone (Shared Feature Extractor)
-        self.conv1 = nn.Conv1d(2, 64, kernel_size=7, stride=1, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm1d(64)
-        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
-        
-        self.layer1 = self._make_layer(BasicBlock1D, 64, 2, stride=1)
-        self.layer2 = self._make_layer(BasicBlock1D, 128, 2, stride=2)
-        self.layer3 = self._make_layer(BasicBlock1D, 256, 2, stride=2)
-        self.layer4 = self._make_layer(BasicBlock1D, 512, 2, stride=2)
-        
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        if self.backbone_type == 'vit':
+            from models.vit import ViT1D
+            self.vit = ViT1D(out_dim=512)
+        else:
+            self.in_planes = 64
+            # ── ResNet-18 1D Backbone (Shared Feature Layer / FL) ──────────────
+            self.conv1 = nn.Conv1d(2, 64, kernel_size=7, stride=1, padding=3, bias=False)
+            self.bn1 = nn.BatchNorm1d(64)
+            self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+            
+            self.layer1 = self._make_layer(BasicBlock1D, 64, 2, stride=1)
+            self.layer2 = self._make_layer(BasicBlock1D, 128, 2, stride=2)
+            self.layer3 = self._make_layer(BasicBlock1D, 256, 2, stride=2)
+            self.layer4 = self._make_layer(BasicBlock1D, 512, 2, stride=2)
+            
+            self.avgpool = nn.AdaptiveAvgPool1d(1)
         
         # Feature projection
         self.use_simple_projection = use_simple_projection
@@ -97,19 +102,24 @@ class DONet(nn.Module):
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
+    def _extract_backbone_features(self, x):
+        """Run the shared backbone and return the flat 512-d feature vector."""
+        if self.backbone_type == 'vit':
+            return self.vit(x)
+        else:
+            out = F.relu(self.bn1(self.conv1(x)))
+            out = self.maxpool(out)
+            out = self.layer1(out)
+            out = self.layer2(out)
+            out = self.layer3(out)
+            out = self.layer4(out)
+            out = self.avgpool(out)
+            return out.view(out.size(0), -1)  # [B, 512]
+
     def forward(self, x):
         # x shape: [Batch, 2, 128]
         
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.maxpool(out)
-        
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        
-        out = self.avgpool(out)
-        features = out.view(out.size(0), -1) # Flatten -> [Batch, 512]
+        features = self._extract_backbone_features(x)
         contrast_features = self.cop(features)
         logits = self.clp(features)
         
@@ -162,14 +172,7 @@ class DONet(nn.Module):
                 batch_x = batch_x.to(device)
                 batch_y = batch_y.to(device)
                 
-                out = F.relu(self.bn1(self.conv1(batch_x)))
-                out = self.maxpool(out)
-                out = self.layer1(out)
-                out = self.layer2(out)
-                out = self.layer3(out)
-                out = self.layer4(out)
-                out = self.avgpool(out)
-                features = out.view(out.size(0), -1) 
+                features = self._extract_backbone_features(batch_x)
                 contrast_features = self.cop(features)
                 
                 for i in range(self.num_classes):
@@ -185,14 +188,7 @@ class DONet(nn.Module):
                     batch_x = extra_x[start_idx:start_idx+batch_size].to(device)
                     batch_y = extra_y[start_idx:start_idx+batch_size].to(device)
                     
-                    out = F.relu(self.bn1(self.conv1(batch_x)))
-                    out = self.maxpool(out)
-                    out = self.layer1(out)
-                    out = self.layer2(out)
-                    out = self.layer3(out)
-                    out = self.layer4(out)
-                    out = self.avgpool(out)
-                    features = out.view(out.size(0), -1) 
+                    features = self._extract_backbone_features(batch_x)
                     contrast_features = self.cop(features)
                     
                     for i in range(self.num_classes):
