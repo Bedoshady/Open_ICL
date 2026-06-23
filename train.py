@@ -59,9 +59,9 @@ def main():
     
     num_known = len(known_classes)
     model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=USE_SIMPLE_PROJ).to(device)
-    
+    torch.autograd.set_detect_anomaly(True, check_nan=False)
     # ── Loss ────────────────────────────────────────────────────────────
-    criterion = BatchAllTripletLoss().to(device)
+    criterion = BatchAllTripletLoss(margin=1.0).to(device)
 
     # ── Optimiser & Scheduler ───────────────────────────────────────────
     # Paper uses Adam optimizer with learning rate of 0.0006

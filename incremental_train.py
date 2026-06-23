@@ -69,7 +69,7 @@ def run_incremental_learning():
     
     # 5. Fine-Tuning Phase with Sample Replay using Triplet Loss
     print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (Triplet Loss) ---")
-    criterion = BatchAllTripletLoss().to(device)
+    criterion = BatchAllTripletLoss(margin=1.0).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.0006, weight_decay=1e-4)
 
     # Scheduler
