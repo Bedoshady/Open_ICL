@@ -32,43 +32,28 @@ class UnknownSignalBank:
             return None, None
         return np.array(self.signals), np.array(self.features)
 
-    def discover_new_classes(self, n_clusters=None):
+    def discover_new_classes(self, eps=0.5, min_samples=10):
         """
-        Cluster the stored unknown features to discover new classes.
-        If n_clusters is None, it uses the Silhouette score to find the optimal number dynamically.
-        Returns pseudo-labels and the optimal number of clusters.
+        Cluster the stored unknown features to discover new classes using DBSCAN.
+        Returns pseudo-labels (including -1 for noise) and the optimal number of clusters.
         """
         features_np = np.array(self.features)
         
-        if n_clusters is not None:
-            if len(self.features) < n_clusters:
-                return None, n_clusters
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-            pseudo_labels = kmeans.fit_predict(features_np)
-            return pseudo_labels, n_clusters
-            
-        from sklearn.metrics import silhouette_score
+        from sklearn.cluster import DBSCAN
         
-        best_score = -1
-        best_k = 2
-        best_labels = None
+        if len(self.features) < min_samples:
+            return np.zeros(len(self.features), dtype=int), 0
+            
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        pseudo_labels = dbscan.fit_predict(features_np)
         
-        # Test clusters from 2 to 10
-        max_k = min(10, len(self.features) - 1)
-        if max_k < 2:
-            return np.zeros(len(self.features), dtype=int), 1
+        # Calculate number of valid clusters (excluding noise label -1)
+        if -1 in pseudo_labels:
+            n_clusters = len(set(pseudo_labels)) - 1
+        else:
+            n_clusters = len(set(pseudo_labels))
             
-        for k in range(2, max_k + 1):
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
-            labels = kmeans.fit_predict(features_np)
-            score = silhouette_score(features_np, labels)
-            
-            if score > best_score:
-                best_score = score
-                best_k = k
-                best_labels = labels
-                
-        return best_labels, best_k
+        return pseudo_labels, n_clusters
 
     def clear(self):
         self.signals = []

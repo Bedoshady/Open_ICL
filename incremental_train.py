@@ -50,13 +50,17 @@ def run_incremental_learning():
 
     # 3. Cluster the unknowns dynamically
     print("\n--- Step 2: Dynamic Clustering of Unknowns ---")
-    pseudo_labels, n_new_classes = usb.discover_new_classes(n_clusters=None)
-    print(f"Dynamically discovered {n_new_classes} new classes using Silhouette Score.")
+    pseudo_labels, n_new_classes = usb.discover_new_classes(eps=0.5, min_samples=10)
+    print(f"Dynamically discovered {n_new_classes} new classes using DBSCAN.")
     
     if n_new_classes == 0:
         print("No new classes discovered from clustering. Exiting.")
         return
 
+    # Filter out noise points (label -1)
+    valid_mask = pseudo_labels != -1
+    pseudo_labels = pseudo_labels[valid_mask]
+    
     # Offset pseudo labels by the number of known classes
     pseudo_labels = pseudo_labels + num_known
     
@@ -92,9 +96,10 @@ def run_incremental_learning():
     )
     
     # Prepare USB signals as tensors
-    usb_signals, _ = usb.get_all()
-    if usb_signals is not None:
-        usb_signals = torch.tensor(usb_signals, dtype=torch.float32)
+    usb_signals_np, _ = usb.get_all()
+    if usb_signals_np is not None:
+        usb_signals_valid = usb_signals_np[valid_mask]
+        usb_signals = torch.tensor(usb_signals_valid, dtype=torch.float32)
         usb_labels = torch.tensor(pseudo_labels, dtype=torch.long)
     else:
         usb_signals = torch.empty((0, 2, 128))
