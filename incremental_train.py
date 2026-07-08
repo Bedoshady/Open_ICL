@@ -57,10 +57,6 @@ def run_incremental_learning():
         print("No new classes discovered from clustering. Exiting.")
         return
 
-    # Filter out noise points (label -1)
-    valid_mask = pseudo_labels != -1
-    pseudo_labels = pseudo_labels[valid_mask]
-    
     # Offset pseudo labels by the number of known classes
     pseudo_labels = pseudo_labels + num_known
     
@@ -98,8 +94,7 @@ def run_incremental_learning():
     # Prepare USB signals as tensors
     usb_signals_np, _ = usb.get_all()
     if usb_signals_np is not None:
-        usb_signals_valid = usb_signals_np[valid_mask]
-        usb_signals = torch.tensor(usb_signals_valid, dtype=torch.float32)
+        usb_signals = torch.tensor(usb_signals_np, dtype=torch.float32)
         usb_labels = torch.tensor(pseudo_labels, dtype=torch.long)
     else:
         usb_signals = torch.empty((0, 2, 128))
