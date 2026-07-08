@@ -47,12 +47,17 @@ def run_incremental_learning():
         print("USB is empty — no unknown signals were discovered during training. Exiting.")
         return
 
-    # 3. Label Unknowns (K+1 discrimination)
-    print("\n--- Step 2: K+1 Discrimination Labeling ---")
-    n_new_classes = 1
-    # All unknown signals are labeled as the K-th index (which is the (K+1)-th class)
-    pseudo_labels = [num_known] * len(usb.signals)
-    print(f"Assigned {len(usb.signals)} signals to novel class index {num_known}.")
+    # 3. Cluster the unknowns dynamically
+    print("\n--- Step 2: Dynamic Clustering of Unknowns ---")
+    pseudo_labels, n_new_classes = usb.discover_new_classes(n_clusters=None)
+    print(f"Dynamically discovered {n_new_classes} new classes using Silhouette Score.")
+    
+    if n_new_classes == 0:
+        print("No new classes discovered from clustering. Exiting.")
+        return
+
+    # Offset pseudo labels by the number of known classes
+    pseudo_labels = pseudo_labels + num_known
     
     # 4. Model Update
     # Since we removed the CLP, update_num_classes just tracks the count.
