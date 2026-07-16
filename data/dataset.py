@@ -57,7 +57,7 @@ class RadioMLDataset(Dataset):
 
 def get_dataloaders(file_path, known_classes, unknown_classes=None,
                     batch_size=128, min_snr=0, use_pk_sampler=False,
-                    P=6, K=8):
+                    P=6, K=8, max_samples_per_known_class=None):
     """
     Build train / validation DataLoaders.
 
@@ -78,6 +78,19 @@ def get_dataloaders(file_path, known_classes, unknown_classes=None,
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, [train_size, val_size], generator=generator
     )
+
+    if max_samples_per_known_class is not None:
+        filtered_train_indices = []
+        class_counts = {idx: 0 for idx in range(len(known_classes))}
+        for idx in train_dataset.indices:
+            label = dataset.labels[idx]
+            if label != -1:
+                if class_counts[label] < max_samples_per_known_class:
+                    filtered_train_indices.append(idx)
+                    class_counts[label] += 1
+            else:
+                filtered_train_indices.append(idx)
+        train_dataset = torch.utils.data.Subset(dataset, filtered_train_indices)
 
     if use_pk_sampler:
         # Extract labels for the training subset indices

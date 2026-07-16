@@ -81,13 +81,19 @@ def run_incremental_learning():
     
     model.train()
     
+    # Calculate max samples per known class based on USB
+    max_samples_per_known_class = len(usb.signals) // n_new_classes if n_new_classes > 0 else None
+    if max_samples_per_known_class:
+        print(f"Limiting known samples to {max_samples_per_known_class} per class to balance with {n_new_classes} novel classes.")
+
     # Load the original known data for Sample Replay
     train_loader, _ = get_dataloaders(
         'RML2016.10a_dict.pkl', 
         known_classes=known_classes, 
         unknown_classes=[],
         batch_size=128,
-        use_pk_sampler=False   # simpler sampling for short fine-tune
+        use_pk_sampler=False,   # simpler sampling for short fine-tune
+        max_samples_per_known_class=max_samples_per_known_class
     )
     
     # Prepare USB signals as tensors
