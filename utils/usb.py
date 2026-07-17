@@ -1,5 +1,6 @@
 import numpy as np
-from sklearn.cluster import KMeans
+from sklearn.cluster import DBSCAN
+from sklearn.metrics import silhouette_score
 
 class UnknownSignalBank:
     """
@@ -34,41 +35,36 @@ class UnknownSignalBank:
 
     def discover_new_classes(self, n_clusters=None):
         """
-        Cluster the stored unknown features to discover new classes.
-        If n_clusters is None, it uses the Silhouette score to find the optimal number dynamically.
-        Returns pseudo-labels and the optimal number of clusters.
+        Cluster the stored unknown features to discover new classes using default DBSCAN.
+        Returns pseudo-labels and the number of discovered clusters.
         """
         features_np = np.array(self.features)
         
-        if n_clusters is not None:
-            if len(self.features) < n_clusters:
-                return None, n_clusters
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-            pseudo_labels = kmeans.fit_predict(features_np)
-            return pseudo_labels, n_clusters
-            
-        from sklearn.metrics import silhouette_score
-        
-        best_score = -1
-        best_k = 2
-        best_labels = None
-        
-        # Test clusters from 2 to 10
-        max_k = min(10, len(self.features) - 1)
-        if max_k < 2:
+        if len(self.features) < 10:
             return np.zeros(len(self.features), dtype=int), 1
             
-        for k in range(2, max_k + 1):
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
-            labels = kmeans.fit_predict(features_np)
-            score = silhouette_score(features_np, labels)
+        # To detect fewer clusters:
+        # 1. INCREASE eps (points farther apart will merge into the same cluster)
+        # 2. INCREASE min_samples (smaller clusters will be discarded as noise)
+        dbscan = DBSCAN(eps=0.5, min_samples=100) 
+        best_labels = dbscan.fit_predict(features_np)
+        
+        # Check number of valid clusters (excluding noise)
+        mask = best_labels != -1
+        unique_clusters = set(best_labels[mask])
+        best_n_clusters = len(unique_clusters)
+                        
+        if best_n_clusters <= 1:
+            # Fallback if no clustering found multiple clusters
+            return np.zeros(len(self.features), dtype=int), 1
             
-            if score > best_score:
-                best_score = score
-                best_k = k
-                best_labels = labels
-                
-        return best_labels, best_k
+        # Filter out noise points
+        self.signals = [self.signals[i] for i in range(len(self.signals)) if mask[i]]
+        self.features = [self.features[i] for i in range(len(self.features)) if mask[i]]
+        
+        filtered_labels = best_labels[mask]
+        
+        return filtered_labels, best_n_clusters
 
     def clear(self):
         self.signals = []
