@@ -126,7 +126,7 @@ def main():
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
-                    if current_threshold > 0:
+                    if current_threshold:
                         candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
@@ -148,6 +148,9 @@ def main():
                         new_features.append(epoch_candidate_data[idx_val][1])
                 if new_signals:
                     usb.add_signals(new_signals, new_features)
+                    
+        # Compute the global threshold for the next epoch based on this epoch's distances
+        dat.compute_epoch_threshold()
                     
         # ── Epoch stats ─────────────────────────────────────────────────
         avg_loss = total_loss / max(1, num_batches)

@@ -82,7 +82,7 @@ def run_incremental_learning():
     model.train()
     
     # Calculate max samples per known class based on USB
-    max_samples_per_known_class = len(usb.signals) // n_new_classes if n_new_classes > 0 else None
+    max_samples_per_known_class = 10000#len(usb.signals) // n_new_classes if n_new_classes > 0 else None
     if max_samples_per_known_class:
         print(f"Limiting known samples to {max_samples_per_known_class} per class to balance with {n_new_classes} novel classes.")
 
@@ -177,6 +177,8 @@ def run_incremental_learning():
             usb_batch = usb_signals.to(device)
             _, _, _, _, usb_distances = model(usb_batch)
             dat.update(usb_distances, usb_labels.to(device))
+            
+        dat.compute_epoch_threshold()
 
     # Save the expanded model
     novel_class_names = [f"Novel_{i}" for i in range(n_new_classes)]
