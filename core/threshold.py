@@ -47,7 +47,7 @@ class DynamicAdaptiveThreshold:
                 if len(class_dists) > 1:
                     mu = torch.mean(class_dists)
                     sigma = torch.std(class_dists)
-                    self.threshold[c_item] = (mu + 3 * sigma).item()
+                    self.threshold[c_item] = (mu + 1.5 * sigma).item()
                 
         # Clear accumulated distances for the next epoch
         self.epoch_true_dists = []
