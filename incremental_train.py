@@ -164,20 +164,18 @@ def run_incremental_learning():
     dat = DynamicAdaptiveThreshold(alpha=0.95)
     model.eval()
     with torch.no_grad():
+        # Re-compute threshold based ONLY on known samples.
+        # Including novel/USB samples would inflate mu and sigma,
+        # making the threshold too permissive and hiding true unknowns.
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
             _, _, contrast_probs, _, _ = model(batch_x)
             
-            valid_mask = (batch_y != -1)
-            if valid_mask.sum() > 0:
-                dat.update(contrast_probs[valid_mask], batch_y[valid_mask])
-            
-        if len(usb_signals) > 0:
-            usb_batch = usb_signals.to(device)
-            _, _, usb_contrast_probs, _, _ = model(usb_batch)
-            dat.update(usb_contrast_probs, usb_labels.to(device))
-            
+            known_only_mask = (batch_y >= 0) & (batch_y < num_known)
+            if known_only_mask.sum() > 0:
+                dat.update(contrast_probs[known_only_mask], batch_y[known_only_mask])
+        
         dat.compute_epoch_threshold()
 
     # Save the expanded model
