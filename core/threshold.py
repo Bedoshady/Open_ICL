@@ -9,7 +9,7 @@ class DynamicAdaptiveThreshold:
     def __init__(self, alpha=0.95):
         # alpha is the confidence level
         self.alpha = alpha
-        self.threshold = {}
+        self.threshold = None
         self.epoch_true_dists = []
         self.epoch_labels = []
         
@@ -37,17 +37,12 @@ class DynamicAdaptiveThreshold:
     def compute_epoch_threshold(self):
         if len(self.epoch_true_dists) > 0:
             all_true_dists = torch.cat(self.epoch_true_dists, dim=0)
-            all_labels = torch.cat(self.epoch_labels, dim=0)
             
-            unique_classes = torch.unique(all_labels)
-            
-            for c in unique_classes:
-                c_item = c.item()
-                class_dists = all_true_dists[all_labels == c]
-                if len(class_dists) > 1:
-                    mu = torch.mean(class_dists)
-                    sigma = torch.std(class_dists)
-                    self.threshold[c_item] = (mu + 3.0 * sigma).item()
+            # Calculate a single global mu and sigma across all positive pairs as per the paper
+            if len(all_true_dists) > 1:
+                mu = torch.mean(all_true_dists)
+                sigma = torch.std(all_true_dists)
+                self.threshold = (mu + 3.0 * sigma).item()
                 
         # Clear accumulated distances for the next epoch
         self.epoch_true_dists = []

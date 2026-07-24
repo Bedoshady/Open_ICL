@@ -126,7 +126,7 @@ def main():
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
-                    if current_threshold:
+                    if current_threshold is not None:
                         candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
