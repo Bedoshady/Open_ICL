@@ -121,13 +121,13 @@ def main():
             with torch.no_grad():
                 # Update DAT threshold with known samples
                 if known_mask.sum() > 0:
-                    dat.update(distances[known_mask], batch_y[known_mask])
+                    dat.update(contrast_probs[known_mask], batch_y[known_mask])
                 
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
                     if current_threshold:
-                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                        candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
                         # Temporarily store the signals/features of candidates for this epoch

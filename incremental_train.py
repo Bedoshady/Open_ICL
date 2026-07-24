@@ -167,16 +167,16 @@ def run_incremental_learning():
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
-            _, _, _, _, distances = model(batch_x)
+            _, _, contrast_probs, _, _ = model(batch_x)
             
             valid_mask = (batch_y != -1)
             if valid_mask.sum() > 0:
-                dat.update(distances[valid_mask], batch_y[valid_mask])
+                dat.update(contrast_probs[valid_mask], batch_y[valid_mask])
             
         if len(usb_signals) > 0:
             usb_batch = usb_signals.to(device)
-            _, _, _, _, usb_distances = model(usb_batch)
-            dat.update(usb_distances, usb_labels.to(device))
+            _, _, usb_contrast_probs, _, _ = model(usb_batch)
+            dat.update(usb_contrast_probs, usb_labels.to(device))
             
         dat.compute_epoch_threshold()
 
