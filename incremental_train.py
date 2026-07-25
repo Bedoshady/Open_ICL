@@ -28,8 +28,7 @@ def run_incremental_learning():
     known_classes = checkpoint['known_classes']
     num_known = len(known_classes)
     
-    use_simple_proj = checkpoint.get('use_simple_projection', True)
-    model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
+    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # 2. Load USB from checkpoint
@@ -82,19 +81,25 @@ def run_incremental_learning():
     
     model.train()
     
+    # Calculate max samples per known class based on USB
+    max_samples_per_known_class = 10000#len(usb.signals) // n_new_classes if n_new_classes > 0 else None
+    if max_samples_per_known_class:
+        print(f"Limiting known samples to {max_samples_per_known_class} per class to balance with {n_new_classes} novel classes.")
+
     # Load the original known data for Sample Replay
     train_loader, _ = get_dataloaders(
         'RML2016.10a_dict.pkl', 
         known_classes=known_classes, 
         unknown_classes=[],
         batch_size=128,
-        use_pk_sampler=False   # simpler sampling for short fine-tune
+        use_pk_sampler=False,   # simpler sampling for short fine-tune
+        max_samples_per_known_class=max_samples_per_known_class
     )
     
     # Prepare USB signals as tensors
-    usb_signals_np, _ = usb.get_all()
-    if usb_signals_np is not None:
-        usb_signals = torch.tensor(usb_signals_np, dtype=torch.float32)
+    usb_signals, _ = usb.get_all()
+    if usb_signals is not None:
+        usb_signals = torch.tensor(usb_signals, dtype=torch.float32)
         usb_labels = torch.tensor(pseudo_labels, dtype=torch.long)
     else:
         usb_signals = torch.empty((0, 2, 128))
@@ -132,8 +137,8 @@ def run_incremental_learning():
             optimizer.zero_grad()
             #center_optimizer.zero_grad()
             
-            # Forward pass: model returns (logits, contrast_features, distances)
-            logits, contrast_features, distances = model(batch_x)
+            # Forward pass: model returns (logits, contrast_features, contrast_probs, y_novelty, distances)
+            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
             
             # Filter known samples for loss calculation (in case -1 labels exist)
             valid_mask = (batch_y != -1)
@@ -162,19 +167,19 @@ def run_incremental_learning():
     dat = DynamicAdaptiveThreshold(alpha=0.95)
     model.eval()
     with torch.no_grad():
+        # Re-compute threshold based ONLY on known samples.
+        # Including novel/USB samples would inflate mu and sigma,
+        # making the threshold too permissive and hiding true unknowns.
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
-            _, _, distances = model(batch_x)
+            _, _, contrast_probs, _, _ = model(batch_x)
             
-            valid_mask = (batch_y != -1)
-            if valid_mask.sum() > 0:
-                dat.update(distances[valid_mask], batch_y[valid_mask])
-            
-        if len(usb_signals) > 0:
-            usb_batch = usb_signals.to(device)
-            _, _, usb_distances = model(usb_batch)
-            dat.update(usb_distances, usb_labels.to(device))
+            known_only_mask = (batch_y >= 0) & (batch_y < num_known)
+            if known_only_mask.sum() > 0:
+                dat.update(contrast_probs[known_only_mask], batch_y[known_only_mask])
+        
+        dat.compute_epoch_threshold()
 
     # Save the expanded model
     novel_class_names = [f"Novel_{i}" for i in range(n_new_classes)]
@@ -185,7 +190,7 @@ def run_incremental_learning():
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
-        'use_simple_projection': use_simple_proj
+        'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
     }, os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth"))
     
     print(f"\nIncremental Learning Complete!")

@@ -14,7 +14,7 @@ from data.dataset import get_dataloaders
 
 # ── Toggles ─────────────────────────────────────────────────────────────
 USE_SOFT_MARGIN   = True      # use soft-margin triplet loss from paper
-USE_SIMPLE_PROJ   = True      # use simple linear projection from standard ResNet-18
+USE_SIMPLE_PROJ   = False      # use simple linear projection from standard ResNet-18
 USE_MARGIN_SCHED  = False     # linearly ramp margin (ignored if USE_SOFT_MARGIN=True)
 MARGIN_START      = 1.0
 MARGIN_END        = 1.0
@@ -112,8 +112,8 @@ def main():
             
             optimizer.zero_grad()
             
-            # Forward pass: DONet returns (logits, contrast_features, distances)
-            logits, contrast_features, distances = model(batch_x)
+            # Forward pass: DONet returns (logits, contrast_features, contrast_probs, y_novelty, distances)
+            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
             
             # Filter known samples for loss calculation
             known_mask = (batch_y != -1)
@@ -134,13 +134,13 @@ def main():
             with torch.no_grad():
                 # Update DAT threshold with known samples
                 if known_mask.sum() > 0:
-                    dat.update(distances[known_mask], batch_y[known_mask])
+                    dat.update(contrast_probs[known_mask], batch_y[known_mask])
                 
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
-                    if current_threshold > 0:
-                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                    if current_threshold is not None:
+                        candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
                         # Temporarily store the signals/features of candidates for this epoch
@@ -162,6 +162,9 @@ def main():
                 if new_signals:
                     usb.add_signals(new_signals, new_features)
                     
+        # Compute the global threshold for the next epoch based on this epoch's distances
+        dat.compute_epoch_threshold()
+                    
         # ── Epoch stats ─────────────────────────────────────────────────
         avg_loss = total_loss / max(1, num_batches)
         current_lr = optimizer.param_groups[0]['lr']
@@ -181,7 +184,7 @@ def main():
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
-        'use_simple_projection': USE_SIMPLE_PROJ,
+        'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
     }
     checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
     torch.save(save_dict, checkpoint_path)
