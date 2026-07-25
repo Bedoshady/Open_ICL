@@ -57,7 +57,7 @@ def evaluate_model():
     )
     
     print("\n--- Running Evaluation with CLP/COP DAT Anomaly Detection ---")
-    print(f"DAT Threshold from training: {dat_threshold:.4f}")
+    print(f"DAT Thresholds from training: {dat_threshold}")
     
     y_true_binary = []  # 0 for known, 1 for unknown
     y_scores = []       # Anomaly score (min distance to SFC)
@@ -77,20 +77,27 @@ def evaluate_model():
             pred_classes = logits.argmax(dim=1)
             pred_classes_np = pred_classes.cpu().numpy()
             
-            # Anomaly score: use y_novelty (min contrast prob), or equivalently min Euclidean distance
-            min_dists, _ = distances.min(dim=1)
-            min_dists_np = min_dists.cpu().numpy()
+            # Anomaly score: use y_novelty (min contrast prob) instead of Euclidean distance
+            min_probs, closest_classes = contrast_probs.min(dim=1)
+            min_probs_np = min_probs.cpu().numpy()
+            closest_classes_np = closest_classes.cpu().numpy()
             
             # Ground Truth Binary: batch_y is -1 for any unknown signal sample
             is_unknown = (batch_y == -1).cpu().numpy()
             y_true_binary.extend(is_unknown.astype(int))
             
-            # 1. Anomaly Score: Force max score (2.0) if it hits a novel cluster, else use min distance
-            anomaly_scores = np.where(pred_classes_np >= num_original_known, 2.0, min_dists_np)
+            # 1. Anomaly Score: Force max score (2.0) if it hits a novel cluster, else use min prob
+            anomaly_scores = np.where(pred_classes_np >= num_original_known, 2.0, min_probs_np)
             y_scores.extend(anomaly_scores)
             
-            # 2. Binary Prediction: Flag as Unknown (1) if min distance > dat_threshold OR if it falls into a novel cluster
-            predictions = ((min_dists_np > dat_threshold) | (pred_classes_np >= num_original_known)).astype(int)
+            # 2. Binary Prediction: Flag as Unknown (1) if min prob > dat_threshold OR if it falls into a novel cluster
+            if isinstance(dat_threshold, dict):
+                thresholds_arr = np.array([dat_threshold.get(c, float('inf')) for c in closest_classes_np])
+                dist_cond = min_probs_np > thresholds_arr
+            else:
+                dist_cond = min_probs_np > dat_threshold
+                
+            predictions = (dist_cond | (pred_classes_np >= num_original_known)).astype(int)
             y_pred_binary.extend(predictions)
             
             # 3. Closed-Set Accuracy: Evaluated ONLY on the original known classes
@@ -118,7 +125,7 @@ def evaluate_model():
     
     print("\nResults:")
     print(f"Closed-Set Classification Accuracy (Knowns): {acc*100:.2f}%")
-    print(f"Open-Set Detection F1-Score (DAT Threshold = {dat_threshold:.4f}): {os_f1:.4f}")
+    print(f"Open-Set Detection F1-Score (DAT Threshold = {dat_threshold}): {os_f1:.4f}")
     print(f"Open-Set Detection AUROC: {os_auc:.4f}")
 
 if __name__ == '__main__':

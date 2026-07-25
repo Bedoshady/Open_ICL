@@ -121,13 +121,13 @@ def main():
             with torch.no_grad():
                 # Update DAT threshold with known samples
                 if known_mask.sum() > 0:
-                    dat.update(distances[known_mask], batch_y[known_mask])
+                    dat.update(contrast_probs[known_mask], batch_y[known_mask])
                 
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
-                    if current_threshold > 0:
-                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                    if current_threshold is not None:
+                        candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
                         # Temporarily store the signals/features of candidates for this epoch
@@ -148,6 +148,9 @@ def main():
                         new_features.append(epoch_candidate_data[idx_val][1])
                 if new_signals:
                     usb.add_signals(new_signals, new_features)
+                    
+        # Compute the global threshold for the next epoch based on this epoch's distances
+        dat.compute_epoch_threshold()
                     
         # ── Epoch stats ─────────────────────────────────────────────────
         avg_loss = total_loss / max(1, num_batches)
