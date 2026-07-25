@@ -137,8 +137,8 @@ def run_incremental_learning():
             optimizer.zero_grad()
             #center_optimizer.zero_grad()
             
-            # Forward pass: model returns (logits, contrast_features, contrast_probs, y_novelty, distances)
-            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
+            # Forward pass: model returns 5 values
+            logits, contrast_features, _, _, distances = model(batch_x)
             
             # Filter known samples for loss calculation (in case -1 labels exist)
             valid_mask = (batch_y != -1)
@@ -173,11 +173,11 @@ def run_incremental_learning():
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
-            _, _, contrast_probs, _, _ = model(batch_x)
+            _, _, _, _, distances = model(batch_x)
             
             known_only_mask = (batch_y >= 0) & (batch_y < num_known)
             if known_only_mask.sum() > 0:
-                dat.update(contrast_probs[known_only_mask], batch_y[known_only_mask])
+                dat.update(distances[known_only_mask], batch_y[known_only_mask])
         
         dat.compute_epoch_threshold()
 

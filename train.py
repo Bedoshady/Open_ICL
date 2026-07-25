@@ -112,8 +112,8 @@ def main():
             
             optimizer.zero_grad()
             
-            # Forward pass: DONet returns (logits, contrast_features, contrast_probs, y_novelty, distances)
-            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
+            # Forward pass: DONet returns 5 values. We ignore the untrained DM outputs (_, _)
+            logits, contrast_features, _, _, distances = model(batch_x)
             
             # Filter known samples for loss calculation
             known_mask = (batch_y != -1)
@@ -130,17 +130,17 @@ def main():
                     total_loss += loss.item()
                     num_batches += 1
                 
-            # Accumulate features and detect unknowns via CLP/COP distance metric & DAT
+            # Accumulate features and detect unknowns via Euclidean distances & DAT
             with torch.no_grad():
-                # Update DAT threshold with known samples
+                # Update DAT threshold with known samples using Euclidean distances (since Triplet Loss optimizes Euclidean space)
                 if known_mask.sum() > 0:
-                    dat.update(contrast_probs[known_mask], batch_y[known_mask])
+                    dat.update(distances[known_mask], batch_y[known_mask])
                 
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
-                    if current_threshold is not None:
-                        candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
+                    if current_threshold:
+                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
                         # Temporarily store the signals/features of candidates for this epoch
