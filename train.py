@@ -1,4 +1,4 @@
-from core.loss import BatchAllTripletLoss
+from core.loss import BatchAllTripletLoss, BCEContrastLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -62,6 +62,7 @@ def main():
     torch.autograd.set_detect_anomaly(True, check_nan=False)
     # ── Loss ────────────────────────────────────────────────────────────
     criterion = BatchAllTripletLoss(margin=1.0).to(device)
+    bce_criterion = BCEContrastLoss().to(device)
 
     # ── Optimiser & Scheduler ───────────────────────────────────────────
     # Paper uses Adam optimizer with learning rate of 0.0006
@@ -113,16 +114,18 @@ def main():
             optimizer.zero_grad()
             
             # Forward pass: DONet returns 5 values. We ignore the untrained DM outputs (_, _)
-            logits, contrast_features, _, _, distances = model(batch_x)
+            logits, contrast_features, contrast_probs, _, distances = model(batch_x)
             
             # Filter known samples for loss calculation
             known_mask = (batch_y != -1)
             
             if known_mask.sum() > 0:
-                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * triplet_loss
+                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * 0.5 * triplet_loss + (1 - ALPHA) * 0.5 * dm_loss
                 ce_loss = F.cross_entropy(logits[known_mask], batch_y[known_mask])
                 triplet_loss = criterion(contrast_features[known_mask], batch_y[known_mask], margin_override=current_margin)
-                loss = ALPHA * ce_loss + (1.0 - ALPHA) * triplet_loss
+                dm_loss = bce_criterion(contrast_probs[known_mask], batch_y[known_mask], num_known)
+                
+                loss = ALPHA * ce_loss + (1.0 - ALPHA) * 0.5 * triplet_loss + (1.0 - ALPHA) * 0.5 * dm_loss
      
                 if loss.requires_grad:
                     loss.backward()
@@ -130,17 +133,17 @@ def main():
                     total_loss += loss.item()
                     num_batches += 1
                 
-            # Accumulate features and detect unknowns via Euclidean distances & DAT
+            # Accumulate features and detect unknowns via DM contrast_probs & DAT
             with torch.no_grad():
-                # Update DAT threshold with known samples using Euclidean distances (since Triplet Loss optimizes Euclidean space)
+                # Update DAT threshold with known samples using DM probabilities
                 if known_mask.sum() > 0:
-                    dat.update(distances[known_mask], batch_y[known_mask])
+                    dat.update(contrast_probs[known_mask], batch_y[known_mask])
                 
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
                     if current_threshold:
-                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                        candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
                         # Temporarily store the signals/features of candidates for this epoch

@@ -72,31 +72,31 @@ def evaluate_model():
             
             # The model computes logits, contrast features, and Euclidean distances.
             # We ignore the untrained DM outputs (probs, novelty) since Triplet Loss optimizes Euclidean distance directly.
-            logits, contrast_features, _, _, distances = model(batch_x)
+            logits, contrast_features, contrast_probs, _, distances = model(batch_x)
             
             # Compute class predictions via CLP logits
             pred_classes = logits.argmax(dim=1)
             pred_classes_np = pred_classes.cpu().numpy()
             
-            # Anomaly score: use Euclidean distance
-            min_dists, closest_classes = distances.min(dim=1)
-            min_dists_np = min_dists.cpu().numpy()
+            # Anomaly score: use DM probabilities (contrast_probs)
+            min_probs, closest_classes = contrast_probs.min(dim=1)
+            min_probs_np = min_probs.cpu().numpy()
             closest_classes_np = closest_classes.cpu().numpy()
             
             # Ground Truth Binary: batch_y is -1 for any unknown signal sample
             is_unknown = (batch_y == -1).cpu().numpy()
             y_true_binary.extend(is_unknown.astype(int))
             
-            # 1. Anomaly Score: Force max score (1e6) if it hits a novel cluster, else use min dist
-            anomaly_scores = np.where(pred_classes_np >= num_original_known, 1e6, min_dists_np)
+            # 1. Anomaly Score: Force max score (1.0 for probabilities) if it hits a novel cluster, else use min probability
+            anomaly_scores = np.where(pred_classes_np >= num_original_known, 1.0, min_probs_np)
             y_scores.extend(anomaly_scores)
             
-            # 2. Binary Prediction: Flag as Unknown (1) if min dist > dat_threshold OR if it falls into a novel cluster
+            # 2. Binary Prediction: Flag as Unknown (1) if min probability > dat_threshold OR if it falls into a novel cluster
             if isinstance(dat_threshold, dict):
                 thresholds_arr = np.array([dat_threshold.get(c, float('inf')) for c in closest_classes_np])
-                dist_cond = min_dists_np > thresholds_arr
+                dist_cond = min_probs_np > thresholds_arr
             else:
-                dist_cond = min_dists_np > dat_threshold
+                dist_cond = min_probs_np > dat_threshold
                 
             predictions = (dist_cond | (pred_classes_np >= num_original_known)).astype(int)
             y_pred_binary.extend(predictions)

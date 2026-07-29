@@ -1,4 +1,4 @@
-from core.loss import BatchAllTripletLoss
+from core.loss import BatchAllTripletLoss, BCEContrastLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -66,18 +66,15 @@ def run_incremental_learning():
     model.update_num_classes(total_classes)
     print(f"Model now tracking {total_classes} total classes ({num_known} known + {n_new_classes} novel).")
     
-    # 5. Fine-Tuning Phase with Sample Replay using Triplet Loss
-    print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (Triplet Loss) ---")
-    criterion = BatchAllTripletLoss(margin=1.0).to(device)
+    # 5. Fine-Tune with both sets
+    print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (BCE + Triplet Loss) ---")
+    
+    # Freeze the backbone and COP optionally? No, let them adapt
     optimizer = optim.Adam(model.parameters(), lr=0.0006, weight_decay=1e-4)
-
-    # Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6)
-
-    # Logger
-    #inc_logger = TrainingLogger(log_path="logs/incremental_training_log.csv")
-    #early_stop = EarlyStopping(patience=5, min_delta=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-5)
+    
+    criterion = BatchAllTripletLoss(margin=1.0).to(device)
+    bce_criterion = BCEContrastLoss().to(device)
     
     model.train()
     
@@ -109,9 +106,6 @@ def run_incremental_learning():
         #inc_logger.epoch_start()
         total_loss = 0
         batches = 0
-
-        # Margin curriculum: ramp 0.5 → 1.0 over first 5 epochs
-        #current_margin = get_margin(epoch, 0.5, 1.0, ramp_epochs=5)
         
         # Iterate over the original dataset (Sample Replay)
         for batch_known_x, batch_known_y, _ in train_loader:
@@ -129,20 +123,21 @@ def run_incremental_learning():
                 batch_y = batch_known_y.to(device)
             
             optimizer.zero_grad()
-            #center_optimizer.zero_grad()
             
             # Forward pass: model returns 5 values
-            logits, contrast_features, _, _, distances = model(batch_x)
+            logits, contrast_features, contrast_probs, _, distances = model(batch_x)
             
             # Filter known samples for loss calculation (in case -1 labels exist)
             valid_mask = (batch_y != -1)
             
             if valid_mask.sum() > 0:
-                # Joint Loss: alpha * ce_loss + (1 - alpha) * triplet_loss
+                # Joint Loss: alpha * ce_loss + (1 - alpha) * 0.5 * triplet_loss + (1 - alpha) * 0.5 * dm_loss
                 alpha = 0.5
                 ce_loss = F.cross_entropy(logits[valid_mask], batch_y[valid_mask])
                 triplet_loss = criterion(contrast_features[valid_mask], batch_y[valid_mask])
-                loss = alpha * ce_loss + (1.0 - alpha) * triplet_loss
+                dm_loss = bce_criterion(contrast_probs[valid_mask], batch_y[valid_mask], num_known + n_new_classes)
+                
+                loss = alpha * ce_loss + (1.0 - alpha) * 0.5 * triplet_loss + (1.0 - alpha) * 0.5 * dm_loss
                 
                 if loss.requires_grad:
                     loss.backward()
@@ -167,11 +162,12 @@ def run_incremental_learning():
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
-            _, _, _, _, distances = model(batch_x)
+            _, _, contrast_probs, _, distances = model(batch_x)
             
+            # Use strictly original known samples for threshold recalculation!
             known_only_mask = (batch_y >= 0) & (batch_y < num_known)
             if known_only_mask.sum() > 0:
-                dat.update(distances[known_only_mask], batch_y[known_only_mask])
+                dat.update(contrast_probs[known_only_mask], batch_y[known_only_mask])
         
         dat.compute_epoch_threshold()
 
