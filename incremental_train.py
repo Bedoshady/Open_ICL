@@ -1,4 +1,4 @@
-from core.loss import BatchAllTripletLoss
+from core.loss import BatchAllTripletLoss, BCEContrastLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -28,8 +28,7 @@ def run_incremental_learning():
     known_classes = checkpoint['known_classes']
     num_known = len(known_classes)
     
-    use_simple_proj = checkpoint.get('use_simple_projection', True)
-    model = DONet(num_known_classes=num_known, feature_dim=128, use_simple_projection=use_simple_proj).to(device)
+    model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # 2. Load USB from checkpoint
@@ -50,8 +49,8 @@ def run_incremental_learning():
 
     # 3. Cluster the unknowns dynamically
     print("\n--- Step 2: Dynamic Clustering of Unknowns ---")
-    pseudo_labels, n_new_classes = usb.discover_new_classes(n_clusters=None)
-    print(f"Dynamically discovered {n_new_classes} new classes using Silhouette Score.")
+    pseudo_labels, n_new_classes = usb.discover_new_classes()
+    print(f"Dynamically discovered {n_new_classes} new classes using DBSCAN.")
     
     if n_new_classes == 0:
         print("No new classes discovered from clustering. Exiting.")
@@ -67,18 +66,15 @@ def run_incremental_learning():
     model.update_num_classes(total_classes)
     print(f"Model now tracking {total_classes} total classes ({num_known} known + {n_new_classes} novel).")
     
-    # 5. Fine-Tuning Phase with Sample Replay using Triplet Loss
-    print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (Triplet Loss) ---")
-    criterion = BatchAllTripletLoss(margin=1.0).to(device)
+    # 5. Fine-Tune with both sets
+    print("\n--- Step 4: Incremental Fine-Tuning with Sample Replay (BCE + Triplet Loss) ---")
+    
+    # Freeze the backbone and COP optionally? No, let them adapt
     optimizer = optim.Adam(model.parameters(), lr=0.0006, weight_decay=1e-4)
-
-    # Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6)
-
-    # Logger
-    #inc_logger = TrainingLogger(log_path="logs/incremental_training_log.csv")
-    #early_stop = EarlyStopping(patience=5, min_delta=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-5)
+    
+    criterion = BatchAllTripletLoss(margin=1.0).to(device)
+    bce_criterion = BCEContrastLoss().to(device)
     
     model.train()
     
@@ -88,7 +84,7 @@ def run_incremental_learning():
         known_classes=known_classes, 
         unknown_classes=[],
         batch_size=128,
-        use_pk_sampler=False   # simpler sampling for short fine-tune
+        use_pk_sampler=False,   # simpler sampling for short fine-tune
     )
     
     # Prepare USB signals as tensors
@@ -110,9 +106,6 @@ def run_incremental_learning():
         #inc_logger.epoch_start()
         total_loss = 0
         batches = 0
-
-        # Margin curriculum: ramp 0.5 → 1.0 over first 5 epochs
-        #current_margin = get_margin(epoch, 0.5, 1.0, ramp_epochs=5)
         
         # Iterate over the original dataset (Sample Replay)
         for batch_known_x, batch_known_y, _ in train_loader:
@@ -130,20 +123,21 @@ def run_incremental_learning():
                 batch_y = batch_known_y.to(device)
             
             optimizer.zero_grad()
-            #center_optimizer.zero_grad()
             
-            # Forward pass: model returns (logits, contrast_features, distances)
-            logits, contrast_features, distances = model(batch_x)
+            # Forward pass: model returns 5 values
+            logits, contrast_features, contrast_probs, _, distances = model(batch_x)
             
             # Filter known samples for loss calculation (in case -1 labels exist)
             valid_mask = (batch_y != -1)
             
             if valid_mask.sum() > 0:
-                # Joint Loss: alpha * ce_loss + (1 - alpha) * triplet_loss
+                # Joint Loss: alpha * ce_loss + (1 - alpha) * 0.5 * triplet_loss + (1 - alpha) * 0.5 * dm_loss
                 alpha = 0.5
                 ce_loss = F.cross_entropy(logits[valid_mask], batch_y[valid_mask])
                 triplet_loss = criterion(contrast_features[valid_mask], batch_y[valid_mask])
-                loss = alpha * ce_loss + (1.0 - alpha) * triplet_loss
+                dm_loss = bce_criterion(contrast_probs[valid_mask], batch_y[valid_mask], num_known + n_new_classes)
+                
+                loss = alpha * ce_loss + (1.0 - alpha) * 0.5 * triplet_loss + (1.0 - alpha) * 0.5 * dm_loss
                 
                 if loss.requires_grad:
                     loss.backward()
@@ -162,19 +156,20 @@ def run_incremental_learning():
     dat = DynamicAdaptiveThreshold(alpha=0.95)
     model.eval()
     with torch.no_grad():
+        # Re-compute threshold based ONLY on known samples.
+        # Including novel/USB samples would inflate mu and sigma,
+        # making the threshold too permissive and hiding true unknowns.
         for batch_x, batch_y, _ in train_loader:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
-            _, _, distances = model(batch_x)
+            _, _, contrast_probs, _, distances = model(batch_x)
             
-            valid_mask = (batch_y != -1)
-            if valid_mask.sum() > 0:
-                dat.update(distances[valid_mask], batch_y[valid_mask])
-            
-        if len(usb_signals) > 0:
-            usb_batch = usb_signals.to(device)
-            _, _, usb_distances = model(usb_batch)
-            dat.update(usb_distances, usb_labels.to(device))
+            # Use strictly original known samples for threshold recalculation!
+            known_only_mask = (batch_y >= 0) & (batch_y < num_known)
+            if known_only_mask.sum() > 0:
+                dat.update(contrast_probs[known_only_mask], batch_y[known_only_mask])
+        
+        dat.compute_epoch_threshold()
 
     # Save the expanded model
     novel_class_names = [f"Novel_{i}" for i in range(n_new_classes)]
@@ -185,7 +180,7 @@ def run_incremental_learning():
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
-        'use_simple_projection': use_simple_proj
+        'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
     }, os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth"))
     
     print(f"\nIncremental Learning Complete!")

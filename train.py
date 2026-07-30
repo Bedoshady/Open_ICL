@@ -1,4 +1,4 @@
-from core.loss import BatchAllTripletLoss
+from core.loss import BatchAllTripletLoss, BCEContrastLoss
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -14,7 +14,7 @@ from data.dataset import get_dataloaders
 
 # ── Toggles ─────────────────────────────────────────────────────────────
 USE_SOFT_MARGIN   = True      # use soft-margin triplet loss from paper
-USE_SIMPLE_PROJ   = True      # use simple linear projection from standard ResNet-18
+USE_SIMPLE_PROJ   = False      # use simple linear projection from standard ResNet-18
 USE_MARGIN_SCHED  = False     # linearly ramp margin (ignored if USE_SOFT_MARGIN=True)
 MARGIN_START      = 1.0
 MARGIN_END        = 1.0
@@ -62,6 +62,7 @@ def main():
     torch.autograd.set_detect_anomaly(True, check_nan=False)
     # ── Loss ────────────────────────────────────────────────────────────
     criterion = BatchAllTripletLoss(margin=1.0).to(device)
+    bce_criterion = BCEContrastLoss().to(device)
 
     # ── Optimiser & Scheduler ───────────────────────────────────────────
     # Paper uses Adam optimizer with learning rate of 0.0006
@@ -112,17 +113,19 @@ def main():
             
             optimizer.zero_grad()
             
-            # Forward pass: DONet returns (logits, contrast_features, distances)
-            logits, contrast_features, distances = model(batch_x)
+            # Forward pass: DONet returns 5 values. We ignore the untrained DM outputs (_, _)
+            logits, contrast_features, contrast_probs, _, distances = model(batch_x)
             
             # Filter known samples for loss calculation
             known_mask = (batch_y != -1)
             
             if known_mask.sum() > 0:
-                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * triplet_loss
+                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * 0.5 * triplet_loss + (1 - ALPHA) * 0.5 * dm_loss
                 ce_loss = F.cross_entropy(logits[known_mask], batch_y[known_mask])
                 triplet_loss = criterion(contrast_features[known_mask], batch_y[known_mask], margin_override=current_margin)
-                loss = ALPHA * ce_loss + (1.0 - ALPHA) * triplet_loss
+                dm_loss = bce_criterion(contrast_probs[known_mask], batch_y[known_mask], num_known)
+                
+                loss = ALPHA * ce_loss + (1.0 - ALPHA) * 0.5 * triplet_loss + (1.0 - ALPHA) * 0.5 * dm_loss
      
                 if loss.requires_grad:
                     loss.backward()
@@ -130,17 +133,17 @@ def main():
                     total_loss += loss.item()
                     num_batches += 1
                 
-            # Accumulate features and detect unknowns via CLP/COP distance metric & DAT
+            # Accumulate features and detect unknowns via DM contrast_probs & DAT
             with torch.no_grad():
-                # Update DAT threshold with known samples
+                # Update DAT threshold with known samples using DM probabilities
                 if known_mask.sum() > 0:
-                    dat.update(distances[known_mask], batch_y[known_mask])
+                    dat.update(contrast_probs[known_mask], batch_y[known_mask])
                 
                 # USB Population (after warmup) using DAT threshold
                 if epoch >= warmup_epochs:
                     current_threshold = dat.get_threshold()
-                    if current_threshold > 0:
-                        candidates = mia.detect_candidates(distances, current_threshold, batch_idx)
+                    if current_threshold:
+                        candidates = mia.detect_candidates(contrast_probs, current_threshold, batch_idx)
                         epoch_candidates.update(candidates)
                         
                         # Temporarily store the signals/features of candidates for this epoch
@@ -162,6 +165,9 @@ def main():
                 if new_signals:
                     usb.add_signals(new_signals, new_features)
                     
+        # Compute the global threshold for the next epoch based on this epoch's distances
+        dat.compute_epoch_threshold()
+                    
         # ── Epoch stats ─────────────────────────────────────────────────
         avg_loss = total_loss / max(1, num_batches)
         current_lr = optimizer.param_groups[0]['lr']
@@ -181,7 +187,7 @@ def main():
         'dat_threshold': dat.get_threshold(),
         'usb_signals': usb.signals,
         'usb_features': usb.features,
-        'use_simple_projection': USE_SIMPLE_PROJ,
+        'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
     }
     checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
     torch.save(save_dict, checkpoint_path)

@@ -7,9 +7,11 @@ class DynamicAdaptiveThreshold:
     distribution of distances from known class samples to their respective SFCs.
     """
     def __init__(self, alpha=0.95):
-        # alpha is the confidence level (e.g., 95th percentile of distances)
+        # alpha is the confidence level
         self.alpha = alpha
-        self.threshold = 0.0
+        self.threshold = None
+        self.epoch_true_dists = []
+        self.epoch_labels = []
         
     def update(self, distances, labels):
         """
@@ -28,14 +30,23 @@ class DynamicAdaptiveThreshold:
         labels_expanded = valid_labels.view(-1, 1)
         true_dists = valid_dists.gather(1, labels_expanded).squeeze(-1)
         
-        # Set threshold to the alpha-percentile of true distances
-        if len(true_dists) > 0:
-            q = torch.quantile(true_dists, self.alpha)
-            # Smooth moving average update
-            if self.threshold == 0.0:
-                self.threshold = q.item()
-            else:
-                self.threshold = 0.9 * self.threshold + 0.1 * q.item()
+        # Accumulate the true distances for the current epoch
+        self.epoch_true_dists.append(true_dists.detach().cpu())
+        self.epoch_labels.append(valid_labels.detach().cpu())
+        
+    def compute_epoch_threshold(self):
+        if len(self.epoch_true_dists) > 0:
+            all_true_dists = torch.cat(self.epoch_true_dists, dim=0)
+            
+            # Calculate a single global mu and sigma across all positive pairs as per the paper
+            if len(all_true_dists) > 1:
+                mu = torch.mean(all_true_dists)
+                sigma = torch.std(all_true_dists)
+                self.threshold = (mu + 0.5 * sigma).item()
+                
+        # Clear accumulated distances for the next epoch
+        self.epoch_true_dists = []
+        self.epoch_labels = []
                 
     def get_threshold(self):
         return self.threshold
