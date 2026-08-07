@@ -19,7 +19,7 @@ USE_MARGIN_SCHED  = False     # linearly ramp margin (ignored if USE_SOFT_MARGIN
 MARGIN_START      = 1.0
 MARGIN_END        = 1.0
 MARGIN_RAMP_EPOCHS = 10
-ALPHA             = 0.5       # Joint loss weighting: alpha * ce + (1-alpha) * triplet
+ALPHA             = 0.33       # Joint loss weighting: alpha * ce + (1-alpha) * triplet
 # ─────────────────────────────────────────────────────────────────────────
 
 

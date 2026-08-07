@@ -132,12 +132,12 @@ def run_incremental_learning():
             
             if valid_mask.sum() > 0:
                 # Joint Loss: alpha * ce_loss + (1 - alpha) * 0.5 * triplet_loss + (1 - alpha) * 0.5 * dm_loss
-                alpha = 0.5
+                alpha = 0.33
                 ce_loss = F.cross_entropy(logits[valid_mask], batch_y[valid_mask])
                 triplet_loss = criterion(contrast_features[valid_mask], batch_y[valid_mask])
                 dm_loss = bce_criterion(contrast_probs[valid_mask], batch_y[valid_mask], num_known + n_new_classes)
                 
-                loss = alpha * ce_loss + (1.0 - alpha) * 0.5 * triplet_loss + (1.0 - alpha) * 0.5 * dm_loss
+                loss = alpha * ce_loss + alpha * triplet_loss + alpha * dm_loss
                 
                 if loss.requires_grad:
                     loss.backward()

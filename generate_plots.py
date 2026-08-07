@@ -8,7 +8,6 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, auc
 from sklearn.manifold import TSNE
 from models.donet import DONet
-from core.evt import DynamicEVT
 from data.dataset import RadioMLDataset
 
 class RadioMLDatasetWithTrueLabels(RadioMLDataset):
@@ -46,15 +45,9 @@ def generate_plots():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    # Load EVT
-    evt = DynamicEVT(tail_size=0.05)
-    if 'evt_models' in checkpoint and 'evt_centroids' in checkpoint:
-        evt.models = checkpoint['evt_models']
-        evt.centroids = checkpoint['evt_centroids']
-    else:
-        print("Error: EVT parameters not found in checkpoint!")
-        return
-        
+    dat_threshold = checkpoint.get('dat_threshold', 0.5)
+    print(f"Using DAT Threshold: {dat_threshold}")
+    
     all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
     unknown_classes = [c for c in all_classes if c not in known_classes]
     
@@ -90,17 +83,20 @@ def generate_plots():
         for batch_x, batch_y, batch_idx in val_loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
             
-            contrast_features = model(batch_x)
+            logits, contrast_features, contrast_probs, y_novelty, distances = model(batch_x)
             
-            # Predict EVT probabilities
-            probs, pred_classes = evt.predict_prob(contrast_features)
+            # Predict classes using CLP
+            pred_classes = logits.argmax(dim=1)
+            
+            # Anomaly score is the min probability (y_novelty)
+            min_probs, _ = contrast_probs.min(dim=1)
             
             # Open-set binary true labels (0 = known, 1 = unknown)
             is_unknown = (batch_y == -1).cpu().numpy()
             y_true_binary.extend(is_unknown.astype(int))
             
-            # Anomaly score is 1.0 - probability
-            y_scores.extend((1.0 - probs).cpu().numpy())
+            # Anomaly score based on minimum contrast probability
+            y_scores.extend(min_probs.cpu().numpy())
             
             # Classification true/pred for known classes
             known_mask = batch_y >= 0
@@ -149,11 +145,10 @@ def generate_plots():
     plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.4f})')
     plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
     
-    # Find the threshold closest to the 0.95 anomaly score (EVT prob = 0.05)
-    evt_threshold = 0.95
-    idx_thresh = np.argmin(np.abs(thresholds - evt_threshold))
+    # Find the threshold closest to the DAT threshold
+    idx_thresh = np.argmin(np.abs(thresholds - dat_threshold))
     plt.plot(fpr[idx_thresh], tpr[idx_thresh], 'ro', markersize=8, 
-             label=f'EVT Threshold 0.05 (Anomaly Score {evt_threshold})')
+             label=f'DAT Threshold ({dat_threshold:.4f})')
     
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
