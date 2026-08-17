@@ -13,6 +13,7 @@ from data.dataset import get_dataloaders
 def run_incremental_learning():
     parser = argparse.ArgumentParser(description='Phase 2 Incremental Training')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
+    parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file (defaults based on checkpoint type)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -27,6 +28,12 @@ def run_incremental_learning():
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     known_classes = checkpoint['known_classes']
     num_known = len(known_classes)
+    dataset_type = checkpoint.get('dataset_type', 'rml2016')
+    
+    if args.dataset_path:
+        dataset_path = args.dataset_path
+    else:
+        dataset_path = 'RML2016.10a_dict.pkl' if dataset_type == 'rml2016' else 'GOLD_XYZ_OSC.0001_1024.hdf5'
     
     model = DONet(num_known_classes=num_known, feature_dim=128).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -80,11 +87,12 @@ def run_incremental_learning():
     
     # Load the original known data for Sample Replay
     train_loader, _ = get_dataloaders(
-        'RML2016.10a_dict.pkl', 
+        dataset_path, 
         known_classes=known_classes, 
         unknown_classes=[],
         batch_size=128,
         use_pk_sampler=False,   # simpler sampling for short fine-tune
+        dataset_type=dataset_type
     )
     
     # Prepare USB signals as tensors
