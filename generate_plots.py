@@ -11,21 +11,7 @@ from models.donet import DONet
 from core.evt import DynamicEVT
 from data.dataset import RadioMLDataset
 
-class RadioMLDatasetWithTrueLabels(RadioMLDataset):
-    def __init__(self, file_path, known_classes=None, unknown_classes=None, min_snr=0):
-        super().__init__(file_path, known_classes, unknown_classes, min_snr)
-        
-        # Re-parse to get the original class name for each sample
-        with open(file_path, 'rb') as f:
-            data = pickle.load(f, encoding='latin1')
-            
-        self.true_class_names = []
-        for (mod, snr), samples in data.items():
-            if snr < min_snr:
-                continue
-            if mod in self.known_classes or mod in self.unknown_classes:
-                self.true_class_names.extend([mod] * samples.shape[0])
-        self.true_class_names = np.array(self.true_class_names)
+# Removed RadioMLDatasetWithTrueLabels since true_class_names is now built into RadioMLDataset directly.
 
 def generate_plots():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,6 +32,7 @@ def generate_plots():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
+<<<<<<< HEAD
     # Load EVT
     evt = DynamicEVT(tail_size=0.05)
     if 'evt_models' in checkpoint and 'evt_centroids' in checkpoint:
@@ -56,13 +43,30 @@ def generate_plots():
         return
         
     all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
+=======
+    dat_threshold = checkpoint.get('dat_threshold', 0.5)
+    print(f"Using DAT Threshold: {dat_threshold}")
+    
+    dataset_type = checkpoint.get('dataset_type', 'rml2016')
+    dataset_path = 'RML2016.10a_dict.pkl' if dataset_type == 'rml2016' else 'GOLD_XYZ_OSC.0001_1024.hdf5'
+    
+    if dataset_type == 'rml2018':
+        all_classes = ['OOK', 'ASK4', 'ASK8', 'BPSK', 'QPSK', 'PSK8', 'PSK16', 'PSK32', 
+                       'APSK16', 'APSK32', 'APSK64', 'APSK128', 'QAM16', 'QAM32', 'QAM64', 
+                       'QAM128', 'QAM256', 'AM_SSB_WC', 'AM_SSB_SC', 'AM_DSB_WC', 'AM_DSB_SC', 
+                       'FM', 'GMSK', 'OQPS']
+    else:
+        all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
+        
+>>>>>>> 596ad0c (Added Support for RML2018)
     unknown_classes = [c for c in all_classes if c not in known_classes]
     
     # Instantiate dataset with true labels tracked
-    dataset = RadioMLDatasetWithTrueLabels(
-        'RML2016.10a_dict.pkl', 
+    dataset = RadioMLDataset(
+        dataset_path, 
         known_classes=known_classes, 
-        unknown_classes=unknown_classes
+        unknown_classes=unknown_classes,
+        dataset_type=dataset_type
     )
     
     train_size = int(0.8 * len(dataset))
