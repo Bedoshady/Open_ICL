@@ -189,6 +189,7 @@ def run_incremental_learning():
         'usb_signals': usb.signals,
         'usb_features': usb.features,
         'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
+        'dataset_type': dataset_type,
     }, os.path.join(args.checkpoint_dir, "phase2_incremental_model.pth"))
     
     print(f"\nIncremental Learning Complete!")

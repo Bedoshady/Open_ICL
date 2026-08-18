@@ -72,7 +72,7 @@ python incremental_train.py --checkpoint_dir "$ckpt_dir" --dataset_path "$DATASE
 
 # 3. Evaluation
 echo "Starting Evaluation..."
-python evaluate.py --checkpoint_dir "$ckpt_dir" --dataset_path "$DATASET_PATH"
+python evaluate.py --checkpoint_dir "$ckpt_dir" --dataset_path "$DATASET_PATH" --dataset_type "$DATASET_TYPE"
 
 echo "Finished Experiment: $name"
 echo "========================================================="
