@@ -12,6 +12,7 @@ def evaluate_model():
     parser = argparse.ArgumentParser(description='Evaluation')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
     parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file')
+    parser.add_argument('--dataset_type', type=str, default='', help='Dataset format to use (overrides checkpoint value)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,7 +47,10 @@ def evaluate_model():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    dataset_type = checkpoint.get('dataset_type', 'rml2016')
+    if args.dataset_type:
+        dataset_type = args.dataset_type
+    else:
+        dataset_type = checkpoint.get('dataset_type', 'rml2016')
     
     if args.dataset_path:
         dataset_path = args.dataset_path
