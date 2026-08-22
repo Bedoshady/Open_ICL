@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
 class UnknownSignalBank:
@@ -33,38 +33,54 @@ class UnknownSignalBank:
             return None, None
         return np.array(self.signals), np.array(self.features)
 
-    def discover_new_classes(self, n_clusters=None):
+    def discover_new_classes(self, n_clusters=None, max_k=15, random_state=42):
         """
-        Cluster the stored unknown features to discover new classes using default DBSCAN.
+        Cluster the stored unknown features to discover new classes.
+
+        If n_clusters is provided, KMeans is run with that fixed k.
+        Otherwise, the optimal k is selected by sweeping k in [2, max_k]
+        and choosing the k that maximises the Silhouette Score.
+
         Returns pseudo-labels and the number of discovered clusters.
         """
         features_np = np.array(self.features)
-        
+
         if len(self.features) < 10:
             return np.zeros(len(self.features), dtype=int), 1
-            
-        # To detect fewer clusters:
-        # 1. INCREASE eps (points farther apart will merge into the same cluster)
-        # 2. INCREASE min_samples (smaller clusters will be discarded as noise)
-        dbscan = DBSCAN(eps=0.5, min_samples=100) 
-        best_labels = dbscan.fit_predict(features_np)
-        
-        # Check number of valid clusters (excluding noise)
-        mask = best_labels != -1
-        unique_clusters = set(best_labels[mask])
-        best_n_clusters = len(unique_clusters)
-                        
-        if best_n_clusters <= 1:
-            # Fallback if no clustering found multiple clusters
+
+        # --- Fixed k mode ---
+        if n_clusters is not None:
+            km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init='auto')
+            best_labels = km.fit_predict(features_np)
+            return best_labels, n_clusters
+
+        # --- Silhouette-guided k search ---
+        best_score = -1.0
+        best_labels = None
+        best_n_clusters = 1
+
+        # Cap max_k to avoid searching beyond the data size
+        upper = min(max_k, len(features_np) - 1)
+
+        for k in range(2, upper + 1):
+            km = KMeans(n_clusters=k, random_state=random_state, n_init='auto')
+            labels = km.fit_predict(features_np)
+            try:
+                score = silhouette_score(features_np, labels)
+            except ValueError:
+                continue
+            print(f"  k={k:>2d}  silhouette={score:.4f}")
+            if score > best_score:
+                best_score = score
+                best_labels = labels
+                best_n_clusters = k
+
+        if best_labels is None:
+            # Fallback: no valid clustering found
             return np.zeros(len(self.features), dtype=int), 1
-            
-        # Filter out noise points
-        self.signals = [self.signals[i] for i in range(len(self.signals)) if mask[i]]
-        self.features = [self.features[i] for i in range(len(self.features)) if mask[i]]
-        
-        filtered_labels = best_labels[mask]
-        
-        return filtered_labels, best_n_clusters
+
+        print(f"Selected k={best_n_clusters} (silhouette={best_score:.4f})")
+        return best_labels, best_n_clusters
 
     def clear(self):
         self.signals = []
