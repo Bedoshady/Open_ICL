@@ -45,7 +45,7 @@ class UnknownSignalBank:
         # To detect fewer clusters:
         # 1. INCREASE eps (points farther apart will merge into the same cluster)
         # 2. INCREASE min_samples (smaller clusters will be discarded as noise)
-        dbscan = DBSCAN(eps=0.5, min_samples=100) 
+        dbscan = DBSCAN(eps=0.3, min_samples=200) 
         best_labels = dbscan.fit_predict(features_np)
         
         # Check number of valid clusters (excluding noise)
