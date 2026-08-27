@@ -120,7 +120,7 @@ class RadioMLDataset(Dataset):
 
 def get_dataloaders(file_path, known_classes, unknown_classes=None,
                     batch_size=128, min_snr=0, use_pk_sampler=False,
-                    P=6, K=8, dataset_type='rml2016'):
+                    P=6, K=8, dataset_type='rml2016', seed=42):
     """
     Build train / validation DataLoaders.
 
@@ -137,7 +137,7 @@ def get_dataloaders(file_path, known_classes, unknown_classes=None,
     val_size = len(dataset) - train_size
     
     # Use manual seed for reproducible splits
-    generator = torch.Generator().manual_seed(42)
+    generator = torch.Generator().manual_seed(seed)
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, [train_size, val_size], generator=generator
     )

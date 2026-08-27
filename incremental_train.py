@@ -14,6 +14,7 @@ def run_incremental_learning():
     parser = argparse.ArgumentParser(description='Phase 2 Incremental Training')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
     parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file (defaults based on checkpoint type)')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for dataset splits')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -92,7 +93,8 @@ def run_incremental_learning():
         unknown_classes=[],
         batch_size=128,
         use_pk_sampler=False,   # simpler sampling for short fine-tune
-        dataset_type=dataset_type
+        dataset_type=dataset_type,
+        seed=args.seed
     )
     
     # Prepare USB signals as tensors
