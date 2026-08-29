@@ -11,21 +11,7 @@ from models.donet import DONet
 from core.evt import DynamicEVT
 from data.dataset import RadioMLDataset
 
-class RadioMLDatasetWithTrueLabels(RadioMLDataset):
-    def __init__(self, file_path, known_classes=None, unknown_classes=None, min_snr=0):
-        super().__init__(file_path, known_classes, unknown_classes, min_snr)
-        
-        # Re-parse to get the original class name for each sample
-        with open(file_path, 'rb') as f:
-            data = pickle.load(f, encoding='latin1')
-            
-        self.true_class_names = []
-        for (mod, snr), samples in data.items():
-            if snr < min_snr:
-                continue
-            if mod in self.known_classes or mod in self.unknown_classes:
-                self.true_class_names.extend([mod] * samples.shape[0])
-        self.true_class_names = np.array(self.true_class_names)
+# Removed RadioMLDatasetWithTrueLabels since true_class_names is now built into RadioMLDataset directly.
 
 def generate_plots():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,10 +45,11 @@ def generate_plots():
     unknown_classes = [c for c in all_classes if c not in known_classes]
     
     # Instantiate dataset with true labels tracked
-    dataset = RadioMLDatasetWithTrueLabels(
-        'RML2016.10a_dict.pkl', 
+    dataset = RadioMLDataset(
+        dataset_path, 
         known_classes=known_classes, 
-        unknown_classes=unknown_classes
+        unknown_classes=unknown_classes,
+        dataset_type=dataset_type
     )
     
     train_size = int(0.8 * len(dataset))
