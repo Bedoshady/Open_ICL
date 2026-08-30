@@ -12,6 +12,8 @@ def evaluate_model():
     parser = argparse.ArgumentParser(description='Evaluation')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
     parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file')
+    parser.add_argument('--dataset_type', type=str, default='', help='Dataset format to use (overrides checkpoint value)')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for dataset splits')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,7 +48,10 @@ def evaluate_model():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    dataset_type = checkpoint.get('dataset_type', 'rml2016')
+    if args.dataset_type:
+        dataset_type = args.dataset_type
+    else:
+        dataset_type = checkpoint.get('dataset_type', 'rml2016')
     
     if args.dataset_path:
         dataset_path = args.dataset_path
@@ -69,7 +74,8 @@ def evaluate_model():
         known_classes=original_known_classes, 
         unknown_classes=unknown_classes,
         batch_size=128,
-        dataset_type=dataset_type
+        dataset_type=dataset_type,
+        seed=args.seed
     )
     
     print("\n--- Running Evaluation with CLP/COP DAT Anomaly Detection ---")
@@ -78,6 +84,8 @@ def evaluate_model():
     y_true_binary = []  # 0 for known, 1 for unknown
     y_scores = []       # Anomaly score (min distance to SFC)
     y_pred_binary = []  # Binary prediction based on DAT threshold
+    y_true_class = []
+    y_pred_class = []
     
     correct_known = 0
     total_known = 0
@@ -103,8 +111,16 @@ def evaluate_model():
             is_unknown = (batch_y == -1).cpu().numpy()
             y_true_binary.extend(is_unknown.astype(int))
             
+<<<<<<< HEAD
             # 1. Anomaly Score: Force max score (1.0 for probabilities) if it hits a novel cluster, else use min probability
             anomaly_scores = np.where(pred_classes_np >= num_original_known, 1.0, min_probs_np)
+=======
+            y_true_class.extend(batch_y.cpu().numpy())
+            y_pred_class.extend(pred_classes_np)
+            
+            # 1. Anomaly Score: Force max score (2.0) if it hits a novel cluster, else use min prob
+            anomaly_scores = np.where(pred_classes_np >= num_original_known, 2.0, min_probs_np)
+>>>>>>> e13c924 (added running the job 3 times and take average)
             y_scores.extend(anomaly_scores)
             
             # 2. Binary Prediction: Flag as Unknown (1) if min probability > dat_threshold OR if it falls into a novel cluster
@@ -130,6 +146,8 @@ def evaluate_model():
     y_true_binary = np.array(y_true_binary)
     y_scores = np.array(y_scores)
     y_pred_binary = np.array(y_pred_binary)
+    y_true_class = np.array(y_true_class)
+    y_pred_class = np.array(y_pred_class)
     
     # Metrics calculation
     os_f1 = f1_score(y_true_binary, y_pred_binary)
@@ -140,10 +158,23 @@ def evaluate_model():
         
     acc = correct_known / total_known if total_known > 0 else 0
     
+    # Overall Accuracy (OA) Calculation
+    # TP: Unknowns correctly identified as unknowns
+    tp = ((y_true_binary == 1) & (y_pred_binary == 1)).sum()
+    # TN: Knowns correctly identified as knowns AND correctly classified to their specific class
+    tn = ((y_true_binary == 0) & (y_pred_binary == 0) & (y_true_class == y_pred_class)).sum()
+    
+    total_samples = len(y_true_binary)
+    oa = (tp + tn) / total_samples if total_samples > 0 else 0.0
+    
     print("\nResults:")
     print(f"Closed-Set Classification Accuracy (Knowns): {acc*100:.2f}%")
     print(f"Open-Set Detection F1-Score (DAT Threshold = {dat_threshold}): {os_f1:.4f}")
     print(f"Open-Set Detection AUROC: {os_auc:.4f}")
+    print(f"Overall Accuracy (OA): {oa*100:.2f}%")
+    
+    # Print parseable line for wrapper script
+    print(f"METRICS: OA={oa*100:.4f}, F1={os_f1:.4f}, CS_ACC={acc*100:.4f}")
 
 if __name__ == '__main__':
     evaluate_model()

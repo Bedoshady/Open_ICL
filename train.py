@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
     parser.add_argument('--dataset_type', type=str, default='rml2016', choices=['rml2016', 'rml2018'], help='Dataset format to use')
     parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file (defaults to RML2016.10a_dict.pkl or GOLD_XYZ_OSC.0001_1024.hdf5)')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for dataset splits')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -66,7 +67,8 @@ def main():
         batch_size=512,          # fallback if PKSampler disabled
         use_pk_sampler=False,
         P=6, K=32,
-        dataset_type=args.dataset_type
+        dataset_type=args.dataset_type,
+        seed=args.seed
     )
     
     num_known = len(known_classes)
