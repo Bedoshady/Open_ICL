@@ -27,18 +27,29 @@ def main():
     parser = argparse.ArgumentParser(description='Phase 1 Training')
     parser.add_argument('--known_classes', type=str, required=True, help='Comma separated list of known classes')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
+    parser.add_argument('--dataset_type', type=str, default='rml2016', choices=['rml2016', 'rml2018'], help='Dataset format to use')
+    parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file (defaults to RML2016.10a_dict.pkl or GOLD_XYZ_OSC.0001_1024.hdf5)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    dataset_path = 'RML2016.10a_dict.pkl'
+    if args.dataset_path:
+        dataset_path = args.dataset_path
+    else:
+        dataset_path = 'RML2016.10a_dict.pkl' if args.dataset_type == 'rml2016' else 'GOLD_XYZ_OSC.0001_1024.hdf5'
+        
     if not os.path.exists(dataset_path):
         print(f"Error: Dataset {dataset_path} not found.")
         return
 
-    # RadioML 2016.10a modulations
-    all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
+    if args.dataset_type == 'rml2018':
+        all_classes = ['OOK', 'ASK4', 'ASK8', 'BPSK', 'QPSK', 'PSK8', 'PSK16', 'PSK32', 
+                       'APSK16', 'APSK32', 'APSK64', 'APSK128', 'QAM16', 'QAM32', 'QAM64', 
+                       'QAM128', 'QAM256', 'AM_SSB_WC', 'AM_SSB_SC', 'AM_DSB_WC', 'AM_DSB_SC', 
+                       'FM', 'GMSK', 'OQPS']
+    else:
+        all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
     
     # Split into known and unknown from args
     known_classes = [c.strip() for c in args.known_classes.split(',')]
@@ -54,7 +65,8 @@ def main():
         unknown_classes=unknown_classes,
         batch_size=512,          # fallback if PKSampler disabled
         use_pk_sampler=False,
-        P=6, K=32
+        P=6, K=32,
+        dataset_type=args.dataset_type
     )
     
     num_known = len(known_classes)
@@ -188,6 +200,7 @@ def main():
         'usb_signals': usb.signals,
         'usb_features': usb.features,
         'use_simple_projection': False,  # legacy key, architecture now always uses full COP/CLP
+        'dataset_type': args.dataset_type,
     }
     checkpoint_path = os.path.join(args.checkpoint_dir, "phase1_model.pth")
     torch.save(save_dict, checkpoint_path)

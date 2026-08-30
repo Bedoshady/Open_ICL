@@ -11,6 +11,7 @@ from data.dataset import get_dataloaders
 def evaluate_model():
     parser = argparse.ArgumentParser(description='Evaluation')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory containing phase1 checkpoint')
+    parser.add_argument('--dataset_path', type=str, default='', help='Path to dataset file')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -45,15 +46,30 @@ def evaluate_model():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
+    dataset_type = checkpoint.get('dataset_type', 'rml2016')
+    
+    if args.dataset_path:
+        dataset_path = args.dataset_path
+    else:
+        dataset_path = 'RML2016.10a_dict.pkl' if dataset_type == 'rml2016' else 'GOLD_XYZ_OSC.0001_1024.hdf5'
+
     # Load validation data (including unknown classes)
-    all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
+    if dataset_type == 'rml2018':
+        all_classes = ['OOK', 'ASK4', 'ASK8', 'BPSK', 'QPSK', 'PSK8', 'PSK16', 'PSK32', 
+                       'APSK16', 'APSK32', 'APSK64', 'APSK128', 'QAM16', 'QAM32', 'QAM64', 
+                       'QAM128', 'QAM256', 'AM_SSB_WC', 'AM_SSB_SC', 'AM_DSB_WC', 'AM_DSB_SC', 
+                       'FM', 'GMSK', 'OQPS']
+    else:
+        all_classes = ['8PSK', 'AM-DSB', 'AM-SSB', 'BPSK', 'CPFSK', 'GFSK', 'PAM4', 'QAM16', 'QAM64', 'QPSK', 'WBFM']
+        
     unknown_classes = [c for c in all_classes if c not in original_known_classes]
     
     _, val_loader = get_dataloaders(
-        'RML2016.10a_dict.pkl', 
+        dataset_path, 
         known_classes=original_known_classes, 
         unknown_classes=unknown_classes,
-        batch_size=128
+        batch_size=128,
+        dataset_type=dataset_type
     )
     
     print("\n--- Running Evaluation with CLP/COP DAT Anomaly Detection ---")
