@@ -111,16 +111,11 @@ def evaluate_model():
             is_unknown = (batch_y == -1).cpu().numpy()
             y_true_binary.extend(is_unknown.astype(int))
             
-<<<<<<< HEAD
-            # 1. Anomaly Score: Force max score (1.0 for probabilities) if it hits a novel cluster, else use min probability
-            anomaly_scores = np.where(pred_classes_np >= num_original_known, 1.0, min_probs_np)
-=======
             y_true_class.extend(batch_y.cpu().numpy())
             y_pred_class.extend(pred_classes_np)
             
             # 1. Anomaly Score: Force max score (2.0) if it hits a novel cluster, else use min prob
             anomaly_scores = np.where(pred_classes_np >= num_original_known, 2.0, min_probs_np)
->>>>>>> e13c924 (added running the job 3 times and take average)
             y_scores.extend(anomaly_scores)
             
             # 2. Binary Prediction: Flag as Unknown (1) if min probability > dat_threshold OR if it falls into a novel cluster
