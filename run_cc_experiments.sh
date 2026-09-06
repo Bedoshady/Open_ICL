@@ -62,17 +62,14 @@ echo "Known Classes: $classes"
 echo "Checkpoint Directory: $ckpt_dir"
 echo "========================================================="
 
-# 1. Phase 1 Training
-echo "Starting Phase 1 Training..."
-python train.py --known_classes "$classes" --checkpoint_dir "$ckpt_dir" --dataset_type "$DATASET_TYPE" --dataset_path "$DATASET_PATH"
-
-# 2. Phase 2 Incremental Training
-echo "Starting Phase 2 Incremental Training..."
-python incremental_train.py --checkpoint_dir "$ckpt_dir" --dataset_path "$DATASET_PATH"
-
-# 3. Evaluation
-echo "Starting Evaluation..."
-python evaluate.py --checkpoint_dir "$ckpt_dir" --dataset_path "$DATASET_PATH"
+# Run the 3-seed pipeline automatically
+echo "Starting 3-seed Pipeline with Averaging..."
+python run_experiments.py \
+    --known_classes "$classes" \
+    --split_dir "$ckpt_dir" \
+    --dataset_type "$DATASET_TYPE" \
+    --dataset_path "$DATASET_PATH" \
+    --seeds "42,43,44"
 
 echo "Finished Experiment: $name"
 echo "========================================================="
