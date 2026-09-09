@@ -42,22 +42,63 @@ class UnknownSignalBank:
         if len(self.features) < 10:
             return np.zeros(len(self.features), dtype=int), 1
             
-        # To detect fewer clusters:
-        # 1. INCREASE eps (points farther apart will merge into the same cluster)
-        # 2. INCREASE min_samples (smaller clusters will be discarded as noise)
-        dbscan = DBSCAN(eps=0.3, min_samples=200) 
-        best_labels = dbscan.fit_predict(features_np)
+        # Dynamic DBSCAN Optimization using Silhouette Score
+        # We search a grid to find the most dense and well-separated clusters without throwing away too much data.
+        eps_values = [0.3, 0.4, 0.5, 0.6]
+        min_samples_values = [50, 100, 200]
         
-        # Check number of valid clusters (excluding noise)
-        mask = best_labels != -1
-        unique_clusters = set(best_labels[mask])
-        best_n_clusters = len(unique_clusters)
+        best_score = -float('inf')
+        best_labels = None
+        best_n_clusters = 1
+        
+        # Track the best 1-cluster solution separately
+        min_1cluster_noise = float('inf')
+        best_1cluster_labels = None
+        
+        from sklearn.metrics import silhouette_score
+        
+        for e in eps_values:
+            for m in min_samples_values:
+                dbscan = DBSCAN(eps=e, min_samples=m)
+                labels = dbscan.fit_predict(features_np)
+                
+                mask = labels != -1
+                valid_count = mask.sum()
+                noise_fraction = 1.0 - (valid_count / len(labels))
+                
+                unique_clusters = set(labels[mask])
+                n_clusters = len(unique_clusters)
+                
+                if n_clusters == 1 and noise_fraction < min_1cluster_noise:
+                    min_1cluster_noise = noise_fraction
+                    best_1cluster_labels = labels
+                
+                # Require at least 2 clusters to compute silhouette, and keep at least 40% of the data
+                elif n_clusters >= 2 and noise_fraction < 0.60:
+                    sil_score = silhouette_score(features_np[mask], labels[mask])
+                    # Penalize high noise to encourage retaining data for incremental learning
+                    adjusted_score = sil_score * (1.0 - noise_fraction)
+                    
+                    if adjusted_score > best_score:
+                        best_score = adjusted_score
+                        best_labels = labels
+                        best_n_clusters = n_clusters
                         
-        if best_n_clusters <= 1:
-            # Fallback if no clustering found multiple clusters
-            return np.zeros(len(self.features), dtype=int), 1
-            
+        # Hypothesis test: Does the data strongly support multiple clusters?
+        # A score < 0.15 indicates overlapping or weak artificial clusters.
+        if best_labels is None or best_score < 0.15:
+            if best_1cluster_labels is not None:
+                print(f"Dynamically Selected DBSCAN: 1 cluster discovered (Min Noise: {min_1cluster_noise:.2%})")
+                best_labels = best_1cluster_labels
+                best_n_clusters = 1
+            else:
+                print("DBSCAN failed to find dense regions. Falling back to single class.")
+                return np.zeros(len(self.features), dtype=int), 1
+        else:
+            print(f"Dynamically Selected DBSCAN: {best_n_clusters} clusters discovered (Score: {best_score:.4f})")
+        
         # Filter out noise points
+        mask = best_labels != -1
         self.signals = [self.signals[i] for i in range(len(self.signals)) if mask[i]]
         self.features = [self.features[i] for i in range(len(self.features)) if mask[i]]
         
