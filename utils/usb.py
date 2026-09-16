@@ -32,80 +32,49 @@ class UnknownSignalBank:
             return None, None
         return np.array(self.signals), np.array(self.features)
 
-    def discover_new_classes(self, n_clusters=None):
+    def discover_new_classes(self, n_clusters=None, max_k=15, random_state=42):
         """
-        Cluster the stored unknown features to discover new classes using default DBSCAN.
+        Cluster the stored unknown features to discover new classes.
         Returns pseudo-labels and the number of discovered clusters.
         """
         features_np = np.array(self.features)
         
-        # Dynamic HDBSCAN Optimization using Silhouette Score
-        # HDBSCAN has no eps parameter, making it far more robust to varying densities.
-        # We only need to search over min_cluster_size.
-        try:
-            from sklearn.cluster import HDBSCAN
-        except ImportError:
-            raise ImportError("HDBSCAN not found. Please install scikit-learn>=1.3.0 or run `pip install hdbscan`.")
-                
-        min_cluster_sizes = [50, 100, 200, 300]
+        if len(self.features) < 10:
+            return np.zeros(len(self.features), dtype=int), 1
+            
+        # Dynamic K-Means Optimization using Silhouette Score
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import silhouette_score
         
         best_score = -float('inf')
         best_labels = None
         best_n_clusters = 1
         
-        # Track the best 1-cluster solution separately
-        min_1cluster_noise = float('inf')
-        best_1cluster_labels = None
+        # Cap max_k to avoid searching beyond the data size
+        upper = min(max_k, len(features_np) - 1)
         
-        from sklearn.metrics import silhouette_score
-        
-        for m in min_cluster_sizes:
-            hdbscan_model = HDBSCAN(min_cluster_size=m)
-            labels = hdbscan_model.fit_predict(features_np)
+        for k in range(2, upper + 1):
+            # We use n_init=10 to avoid warnings and ensure stability
+            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+            labels = kmeans.fit_predict(features_np)
             
-            mask = labels != -1
-            valid_count = mask.sum()
-            noise_fraction = 1.0 - (valid_count / len(labels))
+            sil_score = silhouette_score(features_np, labels)
             
-            unique_clusters = set(labels[mask])
-            n_clusters = len(unique_clusters)
-            
-            if n_clusters == 1 and noise_fraction < min_1cluster_noise:
-                min_1cluster_noise = noise_fraction
-                best_1cluster_labels = labels
-            
-            # Require at least 2 clusters to compute silhouette, and keep at least 40% of the data
-            elif n_clusters >= 2 and noise_fraction < 0.60:
-                sil_score = silhouette_score(features_np[mask], labels[mask])
-                # Penalize high noise to encourage retaining data for incremental learning
-                adjusted_score = sil_score * (1.0 - noise_fraction)
-                
-                if adjusted_score > best_score:
-                    best_score = adjusted_score
-                    best_labels = labels
-                    best_n_clusters = n_clusters
+            if sil_score > best_score:
+                best_score = sil_score
+                best_labels = labels
+                best_n_clusters = k
                         
         # Hypothesis test: Does the data strongly support multiple clusters?
         # A score < 0.15 indicates overlapping or weak artificial clusters.
         if best_labels is None or best_score < 0.15:
-            if best_1cluster_labels is not None:
-                print(f"Dynamically Selected HDBSCAN: 1 cluster discovered (Min Noise: {min_1cluster_noise:.2%})")
-                best_labels = best_1cluster_labels
-                best_n_clusters = 1
-            else:
-                print("HDBSCAN failed to find dense regions. Falling back to single class.")
-                return np.zeros(len(self.features), dtype=int), 1
+            print("Dynamically Selected K-Means: 1 cluster discovered (No strong multi-cluster structure)")
+            return np.zeros(len(self.features), dtype=int), 1
         else:
-            print(f"Dynamically Selected HDBSCAN: {best_n_clusters} clusters discovered (Score: {best_score:.4f})")
-        
-        # Filter out noise points
-        mask = best_labels != -1
-        self.signals = [self.signals[i] for i in range(len(self.signals)) if mask[i]]
-        self.features = [self.features[i] for i in range(len(self.features)) if mask[i]]
-        
-        filtered_labels = best_labels[mask]
-        
-        return filtered_labels, best_n_clusters
+            print(f"Dynamically Selected K-Means: {best_n_clusters} clusters discovered (Score: {best_score:.4f})")
+            
+        # K-Means assigns all points to a cluster (no noise points to filter)
+        return best_labels, best_n_clusters
 
     def clear(self):
         self.signals = []
