@@ -19,7 +19,6 @@ USE_MARGIN_SCHED  = False     # linearly ramp margin (ignored if USE_SOFT_MARGIN
 MARGIN_START      = 1.0
 MARGIN_END        = 1.0
 MARGIN_RAMP_EPOCHS = 10
-ALPHA             = 0.33       # Joint loss weighting: alpha * ce + (1-alpha) * triplet
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -134,12 +133,12 @@ def main():
             known_mask = (batch_y != -1)
             
             if known_mask.sum() > 0:
-                # Joint Loss: ALPHA * ce_loss + (1 - ALPHA) * 0.5 * triplet_loss + (1 - ALPHA) * 0.5 * dm_loss
+                # Joint Loss: 0.5 * ce_loss + 0.25 * triplet_loss + 0.25 * dm_loss
                 ce_loss = F.cross_entropy(logits[known_mask], batch_y[known_mask])
                 triplet_loss = criterion(contrast_features[known_mask], batch_y[known_mask], margin_override=current_margin)
                 dm_loss = bce_criterion(contrast_probs[known_mask], batch_y[known_mask], num_known)
                 
-                loss = ALPHA * ce_loss + (1.0 - ALPHA) * 0.5 * triplet_loss + (1.0 - ALPHA) * 0.5 * dm_loss
+                loss = 0.5 * ce_loss + 0.25 * triplet_loss + 0.25 * dm_loss
      
                 if loss.requires_grad:
                     loss.backward()
