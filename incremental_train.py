@@ -57,7 +57,7 @@ def run_incremental_learning():
 
     # 3. Cluster the unknowns dynamically
     print("\n--- Step 2: Dynamic Clustering of Unknowns ---")
-    pseudo_labels, n_new_classes = usb.discover_new_classes(n_clusters=None)
+    pseudo_labels, n_new_classes = usb.discover_new_classes()
     print(f"Dynamically discovered {n_new_classes} new classes using Silhouette Score.")
     
     if n_new_classes == 0:
